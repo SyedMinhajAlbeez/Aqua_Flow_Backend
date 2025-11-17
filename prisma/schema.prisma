@@ -1,0 +1,266 @@
+// prisma/schema.prisma
+// FINAL PRODUCTION READY SCHEMA – AQUA FLOW PAKISTAN
+// Date: November 17, 2025
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ENUMS (Best Practice) ====================
+enum UserRole {
+  super_admin
+  company_admin
+  company_user
+}
+
+enum OrderStatus {
+  pending
+  confirmed
+  in_progress
+  out_for_delivery
+  delivered
+  cancelled
+  failed
+}
+
+enum PaymentMethod {
+  cash_on_delivery
+  card
+  wallet
+  bank_transfer
+}
+
+enum CustomerStatus {
+  active
+  inactive
+  sleeping
+  overdue
+}
+
+// ==================== USER & TENANT ====================
+model User {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  password     String?
+  role         UserRole  @default(company_admin)
+  phone        String?
+  address      String?
+  logo         String?
+  otp          String?
+  tenantId     String? // NULL for super_admin
+  lastActivity DateTime? @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  tenant      Tenant?   @relation("UserBelongsToTenant", fields: [tenantId], references: [id])
+  keptTenants Tenant[]  @relation("TenantKeeper")
+  products    Product[]
+  zones       Zone[]
+  drivers     Driver[]
+  orders      Order[]
+
+  @@map("users")
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  email     String?  @unique
+  phone     String?
+  address   String?
+  status    String   @default("active")
+  logo      String?
+  keeperId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  keeper    User       @relation("TenantKeeper", fields: [keeperId], references: [id])
+  users     User[]     @relation("UserBelongsToTenant")
+  products  Product[]
+  customers Customer[]
+  zones     Zone[]
+  drivers   Driver[]
+  orders    Order[]
+
+  @@map("tenants")
+}
+
+// ==================== PRODUCT ====================
+model Product {
+  id        String   @id @default(uuid())
+  name      String
+  size      String // "19L", "5 Gallon", "1.5L × 12", "500ml"
+  price     Float
+  image     String?
+  status    String   @default("active")
+  tenantId  String
+  userId    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id])
+  user       User?       @relation(fields: [userId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, size])
+  @@map("products")
+}
+
+// ==================== ZONE ====================
+model Zone {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  userId   String?
+  user     User?   @relation(fields: [userId], references: [id])
+
+  drivers   Driver[]
+  customers Customer[]
+  orders    Order[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("zones")
+}
+
+// ==================== CUSTOMER ====================
+model Customer {
+  id         String  @id @default(uuid())
+  name       String
+  phone      String
+  address    String
+  email      String?
+  city       String?
+  postalCode String?
+  country    String?
+
+  zoneId String?
+  zone   Zone?   @relation(fields: [zoneId], references: [id])
+
+  totalSpent      Float @default(0)
+  dueAmount       Float @default(0)
+  securityDeposit Float @default(0)
+  empties         Int   @default(0)
+  bottlesGiven    Int   @default(0)
+
+  status        CustomerStatus @default(active)
+  lastOrderDate DateTime?
+  sleepingSince DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  orders   Order[]
+
+  @@unique([phone, tenantId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([phone])
+  @@index([lastOrderDate])
+  @@index([zoneId])
+  @@map("customers")
+}
+
+// ==================== DRIVER ====================
+model Driver {
+  id              String   @id @default(uuid())
+  name            String
+  phone           String
+  vehicleId       String
+  zoneId          String
+  zone            Zone     @relation(fields: [zoneId], references: [id])
+  status          String   @default("active")
+  rating          Float?   @default(5.0)
+  totalDeliveries Int      @default(0)
+  todayDeliveries Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  userId   String?
+  user     User?   @relation(fields: [userId], references: [id])
+  orders   Order[]
+
+  @@unique([phone, tenantId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([zoneId])
+  @@index([phone])
+  @@map("drivers")
+}
+
+// ==================== ORDER ====================
+model Order {
+  id                 String @id @default(uuid())
+  orderNumber        Int    @unique @default(autoincrement())
+  orderNumberDisplay String @unique // "#1001", "#1002" → create time par set hoga
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  driverId String?
+  driver   Driver? @relation(fields: [driverId], references: [id])
+
+  zoneId String
+  zone   Zone   @relation(fields: [zoneId], references: [id])
+
+  deliveryDate    DateTime
+  deliveryAddress String
+  totalAmount     Float
+  paymentMethod   PaymentMethod @default(cash_on_delivery)
+  status          OrderStatus   @default(pending)
+
+  items OrderItem[]
+
+  tenantId    String
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, deliveryDate])
+  @@index([tenantId, createdAt])
+  @@index([customerId])
+  @@index([driverId])
+  @@index([orderNumberDisplay])
+  @@map("orders")
+}
+
+// ==================== ORDER ITEM ====================
+model OrderItem {
+  id      String @id @default(uuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  quantity   Int
+  unitPrice  Float
+  totalPrice Float
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}

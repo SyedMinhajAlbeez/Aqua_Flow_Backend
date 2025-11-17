@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# Prisma Generated
+/src/generated/prisma
+
+# === IMAGE UPLOADS (IMPORTANT) ===
+# Sab images ko ignore karo, lekin folder structure ke liye .gitkeep allow karo
+public/images/*
+!public/images/.gitkeep
+
+# Optional: Agar temp files ya build hain
+dist/
+build/
+*.tmp
