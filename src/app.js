@@ -11,7 +11,14 @@ const app = express();
 const PORT = process.env.PORT || 7000;
 
 // Middlewares
-app.use(cors());
+// app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:3000", 
+    credentials: true, 
+  })
+);
+
 app.use(express.json());
 
 // YE LINE ADD KARO — SABSE UPAR (routes se pehle)
