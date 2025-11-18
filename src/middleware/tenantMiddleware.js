@@ -18,7 +18,7 @@ module.exports = async (req, res, next) => {
       return next();
     }
 
-    // COMPANY_ADMIN or STAFF
+    // COMPANY_ADMIN or COMPANY_USER
     if (user.role !== "company_admin" && user.role !== "company_user") {
       return res.status(403).json({ message: "Access denied – Invalid role" });
     }

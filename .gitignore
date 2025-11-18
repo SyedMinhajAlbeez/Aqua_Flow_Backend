@@ -13,8 +13,8 @@ node_modules/
 # Prisma Generated
 /src/generated/prisma
 
-# === IMAGE UPLOADS (IMPORTANT) ===
-# Sab images ko ignore karo, lekin folder structure ke liye .gitkeep allow karo
+# === IMAGE UPLOADS (PERFECT YEH HI RAKHO) ===
+# Sab images ignore, sirf folder bana rahe
 public/images/*
 !public/images/.gitkeep
 

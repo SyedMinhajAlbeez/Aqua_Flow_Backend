@@ -72,7 +72,7 @@ exports.createCompany = async (req, res) => {
   }
 };
 
-// COMPANY ADMIN: Create Staff User (Same Company)
+// COMPANY ADMIN: Create COMPANY USER (Same Company)
 exports.createCompanyUser = async (req, res) => {
   try {
     const { name, email, password, phone, role = "company_user" } = req.body;
@@ -97,7 +97,7 @@ exports.createCompanyUser = async (req, res) => {
       },
     });
 
-    res.status(201).json({ message: "Staff user created", user });
+    res.status(201).json({ message: "Company User created", user });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
