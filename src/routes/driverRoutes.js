@@ -22,7 +22,7 @@ router.use(protect, tenantMiddleware);
 
 router.post("/create", createDriver);
 router.get("/all", getDrivers);
-router.patch("/status/:id", toggleDriverStatus);
 router.put("/update/:id", updateDriver);
+router.patch("/status/:id", toggleDriverStatus);
 
 module.exports = router;

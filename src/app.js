@@ -7,6 +7,8 @@ require("dotenv").config();
 const apiRoutes = require("./routes");
 const errorHandler = require("./utils/errorHandler");
 
+require("./utils/dailyReset");
+
 const app = express();
 const PORT = process.env.PORT || 7000;
 

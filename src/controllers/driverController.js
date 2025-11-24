@@ -3,35 +3,58 @@ const prisma = require("../prisma/client");
 const { sendOTP, verifyOTP } = require("../utils/otpService");
 const jwt = require("jsonwebtoken");
 
-// CREATE DRIVER (Company Admin)
+// CREATE DRIVER
 exports.createDriver = async (req, res) => {
   try {
-    const { name, phone, vehicleId, zoneId } = req.body;
+    const {
+      name,
+      phone,
+      vehicleNumber,
+      vehicleType = "bike",
+      zoneId,
+    } = req.body;
     const tenantId = req.derivedTenantId;
 
-    if (!name || !phone || !vehicleId || !zoneId) {
-      return res.status(400).json({ error: "All fields required" });
+    if (!name || !phone || !vehicleNumber || !zoneId) {
+      return res
+        .status(400)
+        .json({ error: "Name, phone, vehicle number and zone are required" });
     }
 
-    // Check if zone belongs to this company
+    // Zone validation
     const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
     if (!zone || zone.tenantId !== tenantId) {
       return res.status(403).json({ error: "Invalid zone" });
     }
 
-    const existing = await prisma.driver.findFirst({
-      where: { phone, tenantId },
-    });
-    if (existing)
-      return res.status(400).json({ error: "Driver phone already exists" });
+    // Duplicate checks
+    const [existingPhone, existingVehicle] = await Promise.all([
+      prisma.driver.findFirst({ where: { phone, tenantId } }),
+      prisma.driver.findFirst({ where: { vehicleNumber, tenantId } }),
+    ]);
+
+    if (existingPhone)
+      return res.status(400).json({ error: "Phone already registered" });
+    if (existingVehicle)
+      return res.status(400).json({ error: "Vehicle number already in use" });
 
     const driver = await prisma.driver.create({
-      data: { name: name.trim(), phone, vehicleId, zoneId, tenantId },
+      data: {
+        name: name.trim(),
+        phone: phone.trim(),
+        vehicleNumber: vehicleNumber.trim().toUpperCase(),
+        vehicleType: vehicleType.toLowerCase(),
+        zoneId,
+        tenantId,
+        status: "active",
+      },
+      include: { zone: { select: { name: true } } },
     });
 
-    res.status(201).json({ message: "Driver created", driver });
+    res.status(201).json({ message: "Driver created successfully", driver });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Create driver error:", err);
+    res.status(500).json({ error: "Failed to create driver" });
   }
 };
 
@@ -39,29 +62,35 @@ exports.createDriver = async (req, res) => {
 exports.getDrivers = async (req, res) => {
   try {
     const tenantId = req.derivedTenantId;
-    const [drivers, total, active, todayStats] = await Promise.all([
+
+    const [drivers, stats] = await Promise.all([
       prisma.driver.findMany({
         where: { tenantId },
-        include: { zone: { select: { name: true } } },
+        include: {
+          zone: { select: { name: true } },
+        },
         orderBy: { createdAt: "desc" },
       }),
-      prisma.driver.count({ where: { tenantId } }),
-      prisma.driver.count({ where: { tenantId, status: "active" } }),
-      prisma.driver.findMany({
+      prisma.driver.aggregate({
         where: { tenantId },
-        select: { todayDeliveries: true, totalDeliveries: true },
+        _count: { id: true },
+        _avg: { rating: true },
+        _sum: { todayDeliveries: true, totalDeliveries: true },
       }),
     ]);
 
-    const totalToday = todayStats.reduce((a, b) => a + b.todayDeliveries, 0);
+    const activeDrivers = drivers.filter((d) => d.status === "active").length;
 
     res.json({
       drivers,
       stats: {
-        totalDrivers: total,
-        activeNow: active,
-        deliveriesToday: totalToday,
-        activeRoutes: drivers.filter((d) => d.status === "active").length,
+        totalDrivers: stats._count.id,
+        activeDrivers,
+        avgRating: stats._avg.rating
+          ? Number(stats._avg.rating.toFixed(2))
+          : null,
+        deliveriesToday: stats._sum.todayDeliveries || 0,
+        totalDeliveriesEver: stats._sum.totalDeliveries || 0,
       },
     });
   } catch (err) {
@@ -69,49 +98,53 @@ exports.getDrivers = async (req, res) => {
   }
 };
 
-// UPDATE DRIVER (Company Admin)
+// UPDATE DRIVER
 exports.updateDriver = async (req, res) => {
   try {
     const { id } = req.params;
     const tenantId = req.derivedTenantId;
-    const { name, phone, vehicleId, zoneId, status } = req.body;
+    const { name, phone, vehicleNumber, vehicleType, zoneId, status } =
+      req.body;
 
-    // Find driver first
     const driver = await prisma.driver.findUnique({
       where: { id, tenantId },
     });
 
-    if (!driver) {
-      return res.status(404).json({ error: "Driver not found" });
-    }
+    if (!driver) return res.status(404).json({ error: "Driver not found" });
 
-    // If phone is being changed → check duplicate in same company
+    // Duplicate checks if changing phone/vehicle
     if (phone && phone !== driver.phone) {
       const existing = await prisma.driver.findFirst({
         where: { phone, tenantId, NOT: { id } },
       });
-      if (existing) {
-        return res
-          .status(400)
-          .json({ error: "Phone already used by another driver" });
-      }
+      if (existing)
+        return res.status(400).json({ error: "Phone already in use" });
     }
 
-    // If zone is being changed → validate zone belongs to company
+    if (vehicleNumber && vehicleNumber !== driver.vehicleNumber) {
+      const existing = await prisma.driver.findFirst({
+        where: { vehicleNumber, tenantId, NOT: { id } },
+      });
+      if (existing)
+        return res.status(400).json({ error: "Vehicle number already in use" });
+    }
+
     if (zoneId && zoneId !== driver.zoneId) {
       const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
       if (!zone || zone.tenantId !== tenantId) {
-        return res.status(403).json({ error: "Invalid zone selected" });
+        return res.status(403).json({ error: "Invalid zone" });
       }
     }
 
-    // Prepare update data
     const updateData = {
       ...(name && { name: name.trim() }),
       ...(phone && { phone: phone.trim() }),
-      ...(vehicleId && { vehicleId: vehicleId.trim() }),
+      ...(vehicleNumber && {
+        vehicleNumber: vehicleNumber.trim().toUpperCase(),
+      }),
+      ...(vehicleType && { vehicleType: vehicleType.toLowerCase() }),
       ...(zoneId && { zoneId }),
-      ...(status && { status }), // active/inactive
+      ...(status && { status }),
     };
 
     const updatedDriver = await prisma.driver.update({
@@ -132,20 +165,28 @@ exports.updateDriver = async (req, res) => {
 
 // TOGGLE STATUS
 exports.toggleDriverStatus = async (req, res) => {
-  const { id } = req.params;
-  const tenantId = req.derivedTenantId;
+  try {
+    const { id } = req.params;
+    const tenantId = req.derivedTenantId;
 
-  const driver = await prisma.driver.findUnique({ where: { id, tenantId } });
-  if (!driver) return res.status(404).json({ error: "Driver not found" });
+    const driver = await prisma.driver.findUnique({ where: { id, tenantId } });
+    if (!driver) return res.status(404).json({ error: "Driver not found" });
 
-  const updated = await prisma.driver.update({
-    where: { id },
-    data: { status: driver.status === "active" ? "inactive" : "active" },
-  });
+    const newStatus = driver.status === "active" ? "inactive" : "active";
 
-  res.json({ message: "Status updated", status: updated.status });
+    const updated = await prisma.driver.update({
+      where: { id },
+      data: { status: newStatus },
+    });
+
+    res.json({
+      message: "Status updated",
+      status: newStatus,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
-
 // SEND OTP (Public)
 exports.sendDriverOTP = async (req, res) => {
   const { phone } = req.body;

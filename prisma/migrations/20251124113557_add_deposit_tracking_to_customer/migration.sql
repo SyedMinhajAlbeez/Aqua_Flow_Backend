@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "customers" ADD COLUMN     "depositRemaining" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "totalDepositCollected" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "totalDepositRefunded" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "totalReturnableBottles" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "totalReusableOrdered" INTEGER NOT NULL DEFAULT 0;
