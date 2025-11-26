@@ -187,6 +187,85 @@ exports.toggleDriverStatus = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// DRIVER KO SIRF USKE ASSIGNED ORDERS DIKHAO
+// FIXED: Role check added, tenantId consistency, stats date filter for deliveredToday - NOV 26, 2025
+exports.getMyAssignedOrders = async (req, res) => {
+  try {
+    // ✅ NEW: Role check – sirf driver hi access kare
+    if (req.user.role !== "driver") {
+      return res
+        .status(403)
+        .json({ error: "Only drivers can access their orders" });
+    }
+
+    const driverId = req.user.id; // JWT se
+    const tenantId = req.derivedTenantId; // ✅ FIXED: Consistency with other functions (from middleware)
+
+    const orders = await prisma.order.findMany({
+      where: {
+        driverId, // Important: sirf jis driver ka hai
+        tenantId,
+        status: {
+          in: ["pending", "in_progress", "delivered"], // jo driver ko dikhane hain
+        },
+      },
+      include: {
+        customer: {
+          select: {
+            name: true,
+            phone: true,
+            address: true,
+          },
+        },
+        zone: { select: { name: true } },
+        items: {
+          include: {
+            product: {
+              select: {
+                name: true,
+                size: true,
+                isReusable: true,
+                requiresEmptyReturn: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: [
+        { status: "asc" }, // pending pehle
+        { deliveryDate: "asc" },
+        { createdAt: "desc" },
+      ],
+    });
+
+    // Extra info for driver
+    const today = new Date().toDateString();
+    const stats = {
+      totalToday: orders.filter(
+        (o) => new Date(o.deliveryDate).toDateString() === today
+      ).length,
+      pending: orders.filter((o) => o.status === "pending").length,
+      inProgress: orders.filter((o) => o.status === "in_progress").length, // ✅ Consistent naming
+      // ✅ FIXED: Date filter add kiya deliveredToday ke liye
+      deliveredToday: orders.filter(
+        (o) =>
+          o.status === "delivered" &&
+          new Date(o.deliveryDate).toDateString() === today
+      ).length,
+    };
+
+    res.json({
+      message: "Your assigned orders",
+      stats,
+      orders,
+    });
+  } catch (err) {
+    console.error("Get My Orders Error:", err);
+    res.status(500).json({ error: "Failed to fetch your orders" });
+  }
+};
+
 // SEND OTP (Public)
 exports.sendDriverOTP = async (req, res) => {
   const { phone } = req.body;

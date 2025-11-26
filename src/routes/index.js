@@ -11,6 +11,12 @@ router.use("/customers", require("./customerRoute"));
 router.use("/drivers", require("./driverRoutes"));
 router.use("/products", protect, tenantMiddleware, require("./productRoutes"));
 router.use(
+  "/delivery-operations",
+  protect,
+  tenantMiddleware,
+  require("./deliveryOperationsRoute")
+);
+router.use(
   "/inventory",
   protect,
   tenantMiddleware,

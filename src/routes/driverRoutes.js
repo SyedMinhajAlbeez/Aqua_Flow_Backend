@@ -8,6 +8,7 @@ const {
   sendDriverOTP,
   updateDriver,
   verifyDriverOTP,
+  getMyAssignedOrders,
 } = require("../controllers/driverController");
 
 const { protect } = require("../middleware/authMiddleware");
@@ -24,5 +25,6 @@ router.post("/create", createDriver);
 router.get("/all", getDrivers);
 router.put("/update/:id", updateDriver);
 router.patch("/status/:id", toggleDriverStatus);
+router.get("/my-orders", getMyAssignedOrders);
 
 module.exports = router;
