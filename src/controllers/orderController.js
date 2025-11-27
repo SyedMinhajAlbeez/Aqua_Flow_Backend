@@ -7,6 +7,7 @@
 // ✅ FIXED: Global Pool Update for ALL Reusables - NOV 25, 2025
 // ✅ MODIFIED: Driver Optional in Create (Pending Flow + Assign Later) - NOV 25, 2025
 // ✅ ADDED: Customer Support in CreateOrder (Auto Customer ID from Token) - NOV 25, 2025
+// ✅ FIXED: Transaction Timeout (15s) for Neon Latency - NOV 27, 2025
 
 const prisma = require("../prisma/client");
 
@@ -145,104 +146,107 @@ exports.createOrder = async (req, res) => {
     const orderNumberDisplay = `#${1000 + orderCount + 1}`;
 
     // === MAIN TRANSACTION ===
-    const order = await prisma.$transaction(async (tx) => {
-      // 1. Create Order
-      const newOrder = await tx.order.create({
-        data: {
-          orderNumberDisplay,
-          customerId: effectiveCustomerId,
-          driverId: driverId || null,
-          zoneId: customer.zoneId,
-          deliveryDate: new Date(deliveryDate),
-          deliveryAddress: customer.address,
-          totalAmount,
-          acceptableDepositAmount,
-          paymentMethod,
-          status: initialStatus,
-          tenantId,
-          createdById,
-          items: { create: orderItems },
-        },
-      });
-
-      // 2. Update Customer Security Deposit
-      await tx.customer.update({
-        where: { id: effectiveCustomerId },
-        data: { securityDeposit: { increment: acceptableDepositAmount } },
-      });
-
-      // 3. Decrement Product Stock
-      for (const item of items) {
-        await tx.productInventory.update({
-          where: {
-            productId_tenantId: { productId: item.productId, tenantId },
-          },
+    const order = await prisma.$transaction(
+      async (tx) => {
+        // 1. Create Order
+        const newOrder = await tx.order.create({
           data: {
-            currentStock: { decrement: parseInt(item.quantity) || 1 },
-            totalSold: { increment: parseInt(item.quantity) || 1 },
-          },
-        });
-      }
-
-      // 4. Global Bottle Pool Update (only reusables)
-      if (totalReusableDelivered > 0) {
-        await tx.bottleInventory.upsert({
-          where: { tenantId },
-          update: {
-            inStock: { decrement: totalReusableDelivered },
-            withCustomers: { increment: totalReusableDelivered },
-          },
-          create: {
+            orderNumberDisplay,
+            customerId: effectiveCustomerId,
+            driverId: driverId || null,
+            zoneId: customer.zoneId,
+            deliveryDate: new Date(deliveryDate),
+            deliveryAddress: customer.address,
+            totalAmount,
+            acceptableDepositAmount,
+            paymentMethod,
+            status: initialStatus,
             tenantId,
-            inStock: Math.max(0, -totalReusableDelivered),
-            withCustomers: totalReusableDelivered,
+            createdById,
+            items: { create: orderItems },
           },
         });
-      }
 
-      // 5. Customer empties tracking
-      if (circulatingReusableDelivered > 0) {
+        // 2. Update Customer Security Deposit
         await tx.customer.update({
           where: { id: effectiveCustomerId },
-          data: {
-            empties: { increment: expectedEmpties },
-            bottlesGiven: { increment: circulatingReusableDelivered },
-          },
+          data: { securityDeposit: { increment: acceptableDepositAmount } },
         });
-      }
 
-      // FINAL FETCH – FIXED: driver null issue solved with conditional spread
-      return await tx.order.findUnique({
-        where: { id: newOrder.id },
-        include: {
-          customer: { select: { name: true, phone: true, address: true } },
-          ...(driverId && {
-            driver: {
-              select: {
-                name: true,
-                phone: true,
-                vehicleNumber: true,
-                vehicleType: true,
-              },
+        // 3. Decrement Product Stock
+        for (const item of items) {
+          await tx.productInventory.update({
+            where: {
+              productId_tenantId: { productId: item.productId, tenantId },
             },
-          }),
-          zone: { select: { name: true } },
-          items: {
-            include: {
-              product: {
+            data: {
+              currentStock: { decrement: parseInt(item.quantity) || 1 },
+              totalSold: { increment: parseInt(item.quantity) || 1 },
+            },
+          });
+        }
+
+        // 4. Global Bottle Pool Update (only reusables)
+        if (totalReusableDelivered > 0) {
+          await tx.bottleInventory.upsert({
+            where: { tenantId },
+            update: {
+              inStock: { decrement: totalReusableDelivered },
+              withCustomers: { increment: totalReusableDelivered },
+            },
+            create: {
+              tenantId,
+              inStock: Math.max(0, -totalReusableDelivered),
+              withCustomers: totalReusableDelivered,
+            },
+          });
+        }
+
+        // 5. Customer empties tracking
+        if (circulatingReusableDelivered > 0) {
+          await tx.customer.update({
+            where: { id: effectiveCustomerId },
+            data: {
+              empties: { increment: expectedEmpties },
+              bottlesGiven: { increment: circulatingReusableDelivered },
+            },
+          });
+        }
+
+        // FINAL FETCH – FIXED: driver null issue solved with conditional spread
+        return await tx.order.findUnique({
+          where: { id: newOrder.id },
+          include: {
+            customer: { select: { name: true, phone: true, address: true } },
+            ...(driverId && {
+              driver: {
                 select: {
                   name: true,
-                  size: true,
-                  price: true,
-                  depositAmount: true,
-                  isReusable: true,
+                  phone: true,
+                  vehicleNumber: true,
+                  vehicleType: true,
+                },
+              },
+            }),
+            zone: { select: { name: true } },
+            items: {
+              include: {
+                product: {
+                  select: {
+                    name: true,
+                    size: true,
+                    price: true,
+                    depositAmount: true,
+                    isReusable: true,
+                  },
                 },
               },
             },
           },
-        },
-      });
-    });
+        });
+      },
+      { timeout: 15000 }
+    ); // ✅ FIXED: 15s timeout for Neon latency
 
     res.status(201).json({
       message: isCustomerOrder
@@ -480,66 +484,69 @@ exports.completeOrderWithEmpties = async (req, res) => {
 
     const lostEmpties = Math.max(0, totalExpectedEmpties - collectedEmpties);
 
-    await prisma.$transaction(async (tx) => {
-      // 1. Update customer empties
-      await tx.customer.update({
-        where: { id: order.customerId },
-        data: { empties: { decrement: collectedEmpties } },
-      });
-
-      // 2. Update global bottle pool
-      await tx.bottleInventory.upsert({
-        where: { tenantId },
-        update: {
-          withCustomers: { decrement: collectedEmpties },
-          inStock: { increment: goodReturned },
-          repairable: { increment: damagedEmpties },
-          leaked: { increment: leakedEmpties },
-          lost: { increment: lostEmpties },
-        },
-        create: {
-          tenantId,
-          withCustomers: Math.max(0, -collectedEmpties),
-          inStock: goodReturned,
-          repairable: damagedEmpties,
-          leaked: leakedEmpties,
-          lost: lostEmpties,
-        },
-      });
-
-      // 3. Return stock to products (proportional)
-      if (goodReturned > 0 && reusableItems.length > 0) {
-        for (const item of reusableItems) {
-          const proportion = item.quantity / totalExpectedEmpties;
-          const returnQty = Math.round(goodReturned * proportion);
-          if (returnQty > 0) {
-            await tx.productInventory.update({
-              where: {
-                productId_tenantId: { productId: item.product.id, tenantId },
-              },
-              data: { currentStock: { increment: returnQty } },
-            });
-          }
-        }
-      }
-
-      // 4. Update order status
-      await tx.order.update({
-        where: { id },
-        data: { status: "completed" },
-      });
-
-      // ✅ FIXED: 7 days eligibility
-      if (hasReusableProduct) {
+    await prisma.$transaction(
+      async (tx) => {
+        // 1. Update customer empties
         await tx.customer.update({
           where: { id: order.customerId },
-          data: {
-            lastOrderDate: new Date(),
-            nextEligibleDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // ✅ +7 days
+          data: { empties: { decrement: collectedEmpties } },
+        });
+
+        // 2. Update global bottle pool
+        await tx.bottleInventory.upsert({
+          where: { tenantId },
+          update: {
+            withCustomers: { decrement: collectedEmpties },
+            inStock: { increment: goodReturned },
+            repairable: { increment: damagedEmpties },
+            leaked: { increment: leakedEmpties },
+            lost: { increment: lostEmpties },
+          },
+          create: {
+            tenantId,
+            withCustomers: Math.max(0, -collectedEmpties),
+            inStock: goodReturned,
+            repairable: damagedEmpties,
+            leaked: leakedEmpties,
+            lost: lostEmpties,
           },
         });
-      }
-    });
+
+        // 3. Return stock to products (proportional)
+        if (goodReturned > 0 && reusableItems.length > 0) {
+          for (const item of reusableItems) {
+            const proportion = item.quantity / totalExpectedEmpties;
+            const returnQty = Math.round(goodReturned * proportion);
+            if (returnQty > 0) {
+              await tx.productInventory.update({
+                where: {
+                  productId_tenantId: { productId: item.product.id, tenantId },
+                },
+                data: { currentStock: { increment: returnQty } },
+              });
+            }
+          }
+        }
+
+        // 4. Update order status
+        await tx.order.update({
+          where: { id },
+          data: { status: "completed" },
+        });
+
+        // ✅ FIXED: 7 days eligibility
+        if (hasReusableProduct) {
+          await tx.customer.update({
+            where: { id: order.customerId },
+            data: {
+              lastOrderDate: new Date(),
+              nextEligibleDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // ✅ +7 days
+            },
+          });
+        }
+      },
+      { timeout: 15000 }
+    ); // ✅ FIXED: 15s timeout for Neon latency
 
     res.json({
       success: true,
