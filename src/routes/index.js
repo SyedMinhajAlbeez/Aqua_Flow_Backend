@@ -7,8 +7,37 @@ const tenantMiddleware = require("../middleware/tenantMiddleware");
 router.use("/auth", require("./authRoutes"));
 router.use("/companies", protect, require("./companyRoutes"));
 router.use("/users", protect, tenantMiddleware, require("./userRoutes"));
-router.use("/customers", require("./customerRoute"));
-router.use("/drivers", require("./driverRoutes"));
+router.use(
+  "/customer/recurring",
+  protect,
+  tenantMiddleware,
+  require("./customerappRoutes/customerReccuringRoutes")
+);
+router.use(
+  "/customer/orders",
+  protect,
+  tenantMiddleware,
+  require("./customerappRoutes/customerorderRoutes")
+);
+router.use(
+  "/admin/customers",
+  protect,
+  tenantMiddleware,
+  require("./customerAdminRoutes")
+);
+router.use(
+  "/admin/drivers",
+  protect,
+  tenantMiddleware,
+  require("./adminDriverRoutes")
+);
+router.use(
+  "/driver/app",
+  protect,
+  tenantMiddleware,
+  require("./driverappRoutes/driverOrderRoutes")
+);
+
 router.use("/products", protect, tenantMiddleware, require("./productRoutes"));
 router.use(
   "/delivery-operations",

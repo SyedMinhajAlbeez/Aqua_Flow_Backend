@@ -1,9 +1,8 @@
-// src/controllers/driverController.js
 const prisma = require("../prisma/client");
 const { sendOTP, verifyOTP } = require("../utils/otpService");
 const jwt = require("jsonwebtoken");
 
-// CREATE DRIVER
+// CREATE DRIVER - Admin ke liye
 exports.createDriver = async (req, res) => {
   try {
     const {
@@ -58,7 +57,7 @@ exports.createDriver = async (req, res) => {
   }
 };
 
-// GET ALL DRIVERS + STATS
+// GET ALL DRIVERS + STATS - Admin ke liye
 exports.getDrivers = async (req, res) => {
   try {
     const tenantId = req.derivedTenantId;
@@ -98,7 +97,7 @@ exports.getDrivers = async (req, res) => {
   }
 };
 
-// UPDATE DRIVER
+// UPDATE DRIVER - Admin ke liye
 exports.updateDriver = async (req, res) => {
   try {
     const { id } = req.params;
@@ -163,7 +162,7 @@ exports.updateDriver = async (req, res) => {
   }
 };
 
-// TOGGLE STATUS
+// TOGGLE STATUS - Admin ke liye
 exports.toggleDriverStatus = async (req, res) => {
   try {
     const { id } = req.params;
@@ -187,86 +186,28 @@ exports.toggleDriverStatus = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+// RESEND OTP (Public) - Driver login ke liye, spam check ke saath
+exports.resendDriverOTP = async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: "Phone required" });
 
-// DRIVER KO SIRF USKE ASSIGNED ORDERS DIKHAO
-// FIXED: Role check added, tenantId consistency, stats date filter for deliveredToday - NOV 26, 2025
-exports.getMyAssignedOrders = async (req, res) => {
-  try {
-    // ✅ NEW: Role check – sirf driver hi access kare
-    if (req.user.role !== "driver") {
-      return res
-        .status(403)
-        .json({ error: "Only drivers can access their orders" });
-    }
-
-    const driverId = req.user.id; // JWT se
-    const tenantId = req.derivedTenantId; // ✅ FIXED: Consistency with other functions (from middleware)
-
-    const orders = await prisma.order.findMany({
-      where: {
-        driverId, // Important: sirf jis driver ka hai
-        tenantId,
-        status: {
-          in: ["pending", "in_progress", "delivered"], // jo driver ko dikhane hain
-        },
-      },
-      include: {
-        customer: {
-          select: {
-            name: true,
-            phone: true,
-            address: true,
-          },
-        },
-        zone: { select: { name: true } },
-        items: {
-          include: {
-            product: {
-              select: {
-                name: true,
-                size: true,
-                isReusable: true,
-                requiresEmptyReturn: true,
-              },
-            },
-          },
-        },
-      },
-      orderBy: [
-        { status: "asc" }, // pending pehle
-        { deliveryDate: "asc" },
-        { createdAt: "desc" },
-      ],
-    });
-
-    // Extra info for driver
-    const today = new Date().toDateString();
-    const stats = {
-      totalToday: orders.filter(
-        (o) => new Date(o.deliveryDate).toDateString() === today
-      ).length,
-      pending: orders.filter((o) => o.status === "pending").length,
-      inProgress: orders.filter((o) => o.status === "in_progress").length, // ✅ Consistent naming
-      // ✅ FIXED: Date filter add kiya deliveredToday ke liye
-      deliveredToday: orders.filter(
-        (o) =>
-          o.status === "delivered" &&
-          new Date(o.deliveryDate).toDateString() === today
-      ).length,
-    };
-
-    res.json({
-      message: "Your assigned orders",
-      stats,
-      orders,
-    });
-  } catch (err) {
-    console.error("Get My Orders Error:", err);
-    res.status(500).json({ error: "Failed to fetch your orders" });
+  const driver = await prisma.driver.findFirst({ where: { phone } });
+  if (!driver || driver.status !== "active") {
+    return res.status(403).json({ error: "Driver not active" });
   }
+
+  // Resend OTP bhejo with isResend=true
+  const sent = await sendOTP(phone, true); // true = isResend
+  if (!sent) {
+    return res
+      .status(429)
+      .json({ error: "Please wait 20 seconds before resending OTP" }); // ← Yeh message change
+  }
+
+  res.json({ message: "OTP resent to driver" });
 };
 
-// SEND OTP (Public)
+// SEND OTP (Public) - Driver login ke liye
 exports.sendDriverOTP = async (req, res) => {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: "Phone required" });
@@ -279,8 +220,7 @@ exports.sendDriverOTP = async (req, res) => {
   await sendOTP(phone);
   res.json({ message: "OTP sent to driver" });
 };
-
-// VERIFY OTP & LOGIN (Public)
+// VERIFY OTP & LOGIN (Public) - Driver login ke liye
 exports.verifyDriverOTP = async (req, res) => {
   const { phone, otp } = req.body;
   if (!phone || !otp)
@@ -290,10 +230,35 @@ exports.verifyDriverOTP = async (req, res) => {
     return res.status(400).json({ error: "Invalid OTP" });
   }
 
-  const driver = await prisma.driver.findFirst({ where: { phone } });
+  const driver = await prisma.driver.findFirst({
+    where: { phone },
+    select: {
+      id: true,
+      name: true,
+      phone: true,
+      status: true,
+      zoneId: true,
+      vehicleNumber: true, // 👈 NEW
+      tenantId: true,
+    },
+  });
+
   if (!driver || driver.status !== "active") {
     return res.status(403).json({ error: "Driver not active" });
   }
+
+  // Tenant (company) fetch
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: driver.tenantId },
+  });
+
+  // Zone fetch (for zone name)
+  const zone = await prisma.zone.findUnique({
+    where: { id: driver.zoneId },
+    select: {
+      name: true, // 👈 Zone name
+    },
+  });
 
   const token = jwt.sign(
     { id: driver.id, role: "driver", tenantId: driver.tenantId },
@@ -302,13 +267,21 @@ exports.verifyDriverOTP = async (req, res) => {
   );
 
   res.json({
+    success: true,
     message: "Driver login successful",
     token,
     driver: {
       id: driver.id,
       name: driver.name,
       phone: driver.phone,
+
+      // 👉 NEW FIELDS
+      vehicleNumber: driver.vehicleNumber,
       zoneId: driver.zoneId,
+      zoneName: zone ? zone.name : "Unknown",
+
+      // Company (tenant)
+      company: tenant ?? "Unknown",
     },
   });
 };

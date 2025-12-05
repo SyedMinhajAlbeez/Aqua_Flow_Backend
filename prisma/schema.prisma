@@ -5,8 +5,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ==================== ENUMS (Best Practice) ====================
@@ -40,6 +41,20 @@ enum CustomerStatus {
   inactive
   sleeping
   overdue
+}
+
+enum OrderRecurrence {
+  NONE
+  WEEKLY
+  BI_WEEKLY
+  MONTHLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+  EXPIRED
 }
 
 // ==================== USER & TENANT ====================
@@ -90,6 +105,7 @@ model Tenant {
   orders             Order[]
   bottleInventory    BottleInventory?
   productInventories ProductInventory[]
+  subscriptions      Subscription[]
 
   @@map("tenants")
 }
@@ -115,7 +131,8 @@ model Product {
   orderItems OrderItem[]
 
   // ← YEHI SAHI HAI (no extra field, no duplicate)
-  inventory ProductInventory? @relation("ProductInventoryRelation")
+  inventory     ProductInventory? @relation("ProductInventoryRelation")
+  subscriptions Subscription[]
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -206,12 +223,11 @@ model Customer {
   zoneId String?
   zone   Zone?   @relation(fields: [zoneId], references: [id])
 
-  totalSpent       Float     @default(0)
-  dueAmount        Float     @default(0)
-  securityDeposit  Float     @default(0)
-  empties          Int       @default(0)
-  bottlesGiven     Int       @default(0)
-  nextEligibleDate DateTime?
+  totalSpent      Float @default(0)
+  dueAmount       Float @default(0)
+  securityDeposit Float @default(0)
+  empties         Int   @default(0)
+  bottlesGiven    Int   @default(0)
 
   status        CustomerStatus @default(active)
   lastOrderDate DateTime?
@@ -220,9 +236,10 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenantId String
-  tenant   Tenant  @relation(fields: [tenantId], references: [id])
-  orders   Order[]
+  tenantId      String
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  orders        Order[]
+  subscriptions Subscription[]
 
   @@unique([phone, tenantId])
   @@index([tenantId])
@@ -270,6 +287,45 @@ model Driver {
   @@map("drivers")
 }
 
+model Subscription {
+  id         String @id @default(uuid())
+  customerId String
+  tenantId   String
+
+  // Subscription details
+  productId         String
+  quantity          Int             @default(1)
+  recurrence        OrderRecurrence @default(WEEKLY)
+  deliveryDayOfWeek Int // 0=Sunday, 1=Monday, ... 6=Saturday
+  nextDeliveryDate  DateTime // Next delivery date (auto-calculated)
+  lastDeliveredDate DateTime? // Last successful delivery
+
+  // Customer preferences
+  preferredTime    String? // e.g., "Morning", "Afternoon", "Evening"
+  notificationTime Int     @default(21) // 9 PM (hours 0-23)
+
+  // Status & tracking
+  status           SubscriptionStatus @default(ACTIVE)
+  totalDeliveries  Int                @default(0)
+  missedDeliveries Int                @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  customer Customer @relation(fields: [customerId], references: [id])
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  product  Product  @relation(fields: [productId], references: [id])
+  orders   Order[] // All orders from this subscription
+
+  @@unique([customerId, productId, recurrence, deliveryDayOfWeek])
+  @@index([customerId])
+  @@index([tenantId])
+  @@index([status])
+  @@index([nextDeliveryDate])
+  @@map("subscriptions")
+}
+
 // ==================== ORDER ====================
 model Order {
   id                 String @id @default(uuid())
@@ -283,14 +339,21 @@ model Order {
   driver   Driver? @relation(fields: [driverId], references: [id])
 
   zoneId                  String
-  zone                    Zone          @relation(fields: [zoneId], references: [id])
+  zone                    Zone            @relation(fields: [zoneId], references: [id])
   scheduledDate           DateTime?
   deliveryDate            DateTime
   deliveryAddress         String
   totalAmount             Float
-  acceptableDepositAmount Float         @default(0)
-  paymentMethod           PaymentMethod @default(cash_on_delivery)
-  status                  OrderStatus   @default(pending)
+  acceptableDepositAmount Float           @default(0)
+  paymentMethod           PaymentMethod   @default(cash_on_delivery)
+  status                  OrderStatus     @default(pending)
+  // Add these new fields
+  subscriptionId          String?
+  isRecurring             Boolean         @default(false)
+  withBottles             Boolean         @default(true) // true = bottles dena, false = sirf refill
+  recurrence              OrderRecurrence @default(NONE)
+  nextRecurringDate       DateTime?
+  notificationSent        Boolean         @default(false)
 
   items OrderItem[]
 
@@ -299,9 +362,13 @@ model Order {
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id])
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
 
+  @@index([subscriptionId])
+  @@index([isRecurring])
+  @@index([nextRecurringDate])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([tenantId, deliveryDate])

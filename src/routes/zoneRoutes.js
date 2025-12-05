@@ -12,6 +12,6 @@ const router = express.Router();
 router.post("/create", createZone);
 router.get("/all", getZones); // ?page=1
 router.put("/update/:id", updateZone);
-router.delete("/delete/:id", deleteZone); // soft delete
+router.patch("/delete/:id", deleteZone); // soft delete
 
 module.exports = router;

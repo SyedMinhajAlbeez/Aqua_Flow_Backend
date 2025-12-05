@@ -7,15 +7,17 @@ const {
   getOrders,
   updateOrderStatus,
   markAsDelivered,
-  completeOrderWithEmpties,
-  assignDriverToOrder,
+  getOrderById,
+  cancelOrder,
 } = require("../controllers/orderController");
+
+// Admin Order routes
 
 router.post("/create", createOrder);
 router.get("/all", getOrders);
 router.patch("/status/:id", updateOrderStatus);
+router.get("/:id", getOrderById);
+router.patch("/cancel/:id", cancelOrder);
 router.patch("/delivered/:id", markAsDelivered); // Driver: Paani diya
-router.patch("/complete/:id", completeOrderWithEmpties); // Driver: Empties liye
-router.patch("/assign-driver/:id", assignDriverToOrder); // Order Assign Driver
 
 module.exports = router;

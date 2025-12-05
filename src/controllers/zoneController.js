@@ -89,18 +89,23 @@ exports.updateZone = async (req, res) => {
   }
 };
 
-// DELETE ZONE (Soft Delete → status = inactive)
+// PATCH ZONE (Soft Delete → status = inactive)
 exports.deleteZone = async (req, res) => {
   try {
     const { id } = req.params;
     const tenantId = req.derivedTenantId;
 
-    const zone = await prisma.zone.update({
+    const zone = await prisma.zone.findUnique({
       where: { id, tenantId },
-      data: { status: "inactive" },
+      select: { status: true },
     });
 
-    res.json({ message: "Zone deleted (inactive)", zone });
+    const updated = await prisma.zone.update({
+      where: { id, tenantId },
+      data: { status: zone.status === "active" ? "inactive" : "active" },
+    });
+
+    res.json({ message: "Status updated", status: updated.status });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

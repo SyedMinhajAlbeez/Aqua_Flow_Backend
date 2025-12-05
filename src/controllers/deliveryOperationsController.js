@@ -2,15 +2,6 @@
 
 const prisma = require("../prisma/client");
 
-const getPakistanToday = () => {
-  const date = new Date();
-  const pakistanTime = new Date(
-    date.toLocaleString("en-US", { timeZone: "Asia/Karachi" })
-  );
-  pakistanTime.setHours(0, 0, 0, 0);
-  return pakistanTime;
-};
-
 exports.getCustomersByZone = async (req, res) => {
   try {
     const tenantId = req.derivedTenantId;
@@ -27,29 +18,16 @@ exports.getCustomersByZone = async (req, res) => {
     if (zone.tenantId !== tenantId)
       return res.status(403).json({ error: "Access denied" });
 
-    const today = getPakistanToday();
-
     const customers = await prisma.customer.findMany({
       where: {
         zoneId,
         tenantId,
-        AND: [
-          {
-            OR: [
-              { nextEligibleDate: { lte: today } },
-              { nextEligibleDate: null },
-              { lastOrderDate: null },
-            ],
+        orders: {
+          some: {
+            status: "pending",
+            tenantId,
           },
-          {
-            orders: {
-              some: {
-                status: "pending",
-                tenantId,
-              },
-            },
-          },
-        ],
+        },
       },
       select: {
         id: true,
@@ -58,7 +36,6 @@ exports.getCustomersByZone = async (req, res) => {
         address: true,
         empties: true,
         lastOrderDate: true,
-        nextEligibleDate: true,
         _count: { select: { orders: { where: { status: "pending" } } } },
         orders: {
           where: { status: "pending" },
@@ -91,18 +68,15 @@ exports.getCustomersByZone = async (req, res) => {
       return res.json({
         success: true,
         zone: zone.name,
-        totalEligible: 0,
-        asOf: today.toISOString().split("T")[0],
-        message: "No pending deliveries in this zone today",
+        message: "No pending deliveries in this zone",
         customers: [],
       });
     }
 
     const formatted = customers.map((c) => {
       const totalPending = c.orders.reduce((sum, o) => sum + o.totalAmount, 0);
-
-      // ✅ Calculate deliverable bottles
       let deliverableBottles = 0;
+
       c.orders.forEach((order) => {
         order.items.forEach((item) => {
           if (item.product.isReusable) {
@@ -128,27 +102,18 @@ exports.getCustomersByZone = async (req, res) => {
         lastDelivery: c.lastOrderDate
           ? new Date(c.lastOrderDate).toISOString().split("T")[0]
           : "Never",
-        nextEligible: c.nextEligibleDate
-          ? new Date(c.nextEligibleDate).toISOString().split("T")[0]
-          : "Today",
-        eligibleToday: true,
       };
     });
 
     res.json({
       success: true,
       zone: zone.name,
-      totalEligible: formatted.length,
-      asOf: today.toISOString().split("T")[0],
       message: `${formatted.length} customers ready for delivery`,
       customers: formatted,
     });
   } catch (error) {
     console.error("getCustomersByZone ERROR:", error);
-    res.status(500).json({
-      error: "Server error",
-      message: error.message,
-    });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -179,21 +144,16 @@ exports.assignDriverToCustomers = async (req, res) => {
 
     if (!zone || zone.tenantId !== tenantId)
       return res.status(404).json({ error: "Zone not found" });
-    if (!driver || driver.zoneId !== zoneId || driver.tenantId !== tenantId) {
-      return res.status(404).json({ error: "Driver not in this zone" });
-    }
+    // if (!driver || driver.zoneId !== zoneId || driver.tenantId !== tenantId) {
+    //   return res.status(404).json({ error: "Driver not in this zone" });
+    // }
 
     const result = { assigned: 0, skipped: [] };
 
     for (const custId of customerIds) {
       const customer = await prisma.customer.findUnique({
         where: { id: custId },
-        select: {
-          id: true,
-          nextEligibleDate: true,
-          tenantId: true,
-          zoneId: true,
-        },
+        select: { id: true, tenantId: true, zoneId: true },
       });
 
       if (
@@ -202,14 +162,6 @@ exports.assignDriverToCustomers = async (req, res) => {
         customer.zoneId !== zoneId
       ) {
         result.skipped.push({ customerId: custId, reason: "Invalid customer" });
-        continue;
-      }
-
-      const eligible =
-        !customer.nextEligibleDate ||
-        new Date(customer.nextEligibleDate) <= new Date();
-      if (!eligible) {
-        result.skipped.push({ customerId: custId, reason: "Not eligible yet" });
         continue;
       }
 
@@ -248,8 +200,6 @@ exports.assignDriverToCustomers = async (req, res) => {
     });
   } catch (error) {
     console.error("assignDriver ERROR:", error);
-    res
-      .status(500)
-      .json({ error: "Assignment failed", message: error.message });
+    res.status(500).json({ error: "Assignment failed" });
   }
 };

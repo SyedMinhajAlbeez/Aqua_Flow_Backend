@@ -157,7 +157,7 @@ exports.updateProduct = async (req, res) => {
 
     const data = {
       ...(name && { name: name.trim() }),
-      ...(size && { size: trim() }),
+      ...(size && { size: size.trim() }),
       ...(price !== undefined && { price: parseFloat(price) }),
       ...(imageUrl !== undefined && { image: imageUrl }),
       // ← YE TEEN ADD KAR DE
