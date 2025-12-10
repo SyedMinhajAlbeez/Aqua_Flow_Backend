@@ -7,7 +7,12 @@ require("dotenv").config();
 const apiRoutes = require("./routes");
 const errorHandler = require("./utils/errorHandler");
 
-require("./cronJobs/cronJobs");
+try {
+  require("./cronJobs/initCronJobs");
+  console.log("⏰ Cron Jobs Scheduled");
+} catch (error) {
+  console.error("Failed to initialize cron jobs:", error);
+}
 
 const app = express();
 const PORT = process.env.PORT || 7000;

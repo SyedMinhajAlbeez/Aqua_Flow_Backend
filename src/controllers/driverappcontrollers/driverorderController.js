@@ -16,7 +16,7 @@ exports.getMyCompletedOrders = async (req, res) => {
       where: {
         driverId,
         tenantId,
-        status: "completed", // ✅ Sirf completed
+        status: "completed",
       },
       include: {
         customer: {
@@ -40,20 +40,21 @@ exports.getMyCompletedOrders = async (req, res) => {
             },
           },
         },
-        subscription: true, // For recurring info
+        subscription: true,
       },
-      orderBy: { deliveryDate: "desc" }, // Latest completed pehle
+      orderBy: { deliveryDate: "desc" },
     });
 
-    // Add expected empties (historical info)
     const ordersWithDetails = orders.map((order) => {
       const reusableItems = order.items.filter(
         (i) => i.product.isReusable && i.product.requiresEmptyReturn
       );
-      const expectedEmpties = reusableItems.reduce(
-        (sum, i) => sum + i.quantity,
-        0
-      );
+
+      // ✅ FIXED: Simple calculation for completed orders
+      const expectedEmpties =
+        order.withBottles === false
+          ? reusableItems.reduce((sum, i) => sum + i.quantity, 0)
+          : 0;
 
       return {
         ...order,
@@ -64,6 +65,7 @@ exports.getMyCompletedOrders = async (req, res) => {
     });
 
     res.json({
+      success: true,
       message: "Your completed orders history",
       count: ordersWithDetails.length,
       orders: ordersWithDetails,
@@ -75,7 +77,6 @@ exports.getMyCompletedOrders = async (req, res) => {
 };
 
 // GET TODAY'S RECURRING ORDERS FOR DRIVER
-// ✅ FIXED: Ab "delivered" status bhi include kiya taake driver complete kar sake
 exports.getTodayRecurringOrders = async (req, res) => {
   try {
     if (req.user.role !== "driver") {
@@ -90,7 +91,6 @@ exports.getTodayRecurringOrders = async (req, res) => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    // Get driver's zone
     const driver = await prisma.driver.findUnique({
       where: { id: driverId },
       select: { zoneId: true },
@@ -100,7 +100,6 @@ exports.getTodayRecurringOrders = async (req, res) => {
       return res.status(404).json({ error: "Driver not found" });
     }
 
-    // Get today's recurring orders in driver's zone (including delivered for completion)
     const recurringOrders = await prisma.order.findMany({
       where: {
         tenantId,
@@ -110,7 +109,7 @@ exports.getTodayRecurringOrders = async (req, res) => {
           lt: tomorrow,
         },
         status: {
-          in: ["pending", "in_progress", "delivered"], // ✅ Added "delivered"
+          in: ["pending", "in_progress", "delivered"],
         },
         isRecurring: true,
         subscriptionId: { not: null },
@@ -125,6 +124,7 @@ exports.getTodayRecurringOrders = async (req, res) => {
             empties: true,
           },
         },
+        zone: { select: { name: true, id: true } },
         subscription: {
           include: {
             product: {
@@ -142,7 +142,7 @@ exports.getTodayRecurringOrders = async (req, res) => {
                 name: true,
                 size: true,
                 isReusable: true,
-                requiresEmptyReturn: true, // ✅ Added for expected empties calc
+                requiresEmptyReturn: true,
               },
             },
           },
@@ -154,25 +154,37 @@ exports.getTodayRecurringOrders = async (req, res) => {
       ],
     });
 
-    // Format for driver app + expected empties add kiya
+    // ✅ CORRECT LOGIC NOW:
     const formatted = recurringOrders.map((order) => {
       const reusableItems = order.items.filter(
         (i) => i.product.isReusable && i.product.requiresEmptyReturn
       );
-      const expectedEmpties = reusableItems.reduce(
-        (sum, i) => sum + i.quantity,
-        0
-      );
+
+      let expectedEmpties = 0;
+
+      if (order.withBottles === false) {
+        // Refill order - collect empties from previous delivery
+        expectedEmpties = reusableItems.reduce((sum, i) => sum + i.quantity, 0);
+      } else {
+        // First time with bottles - NO empties expected
+        expectedEmpties = 0;
+      }
 
       return {
         id: order.id,
         orderNumber: order.orderNumberDisplay,
+        totalAmount: order.totalAmount,
+        withBottles: order.withBottles,
         customer: {
           id: order.customer.id,
           name: order.customer.name,
           phone: order.customer.phone,
           address: order.customer.address,
-          empties: order.customer.empties, // Available empties
+          empties: order.customer.empties,
+        },
+        zone: {
+          id: order.zone.id,
+          name: order.zone.name,
         },
         subscription: order.subscription
           ? {
@@ -191,24 +203,34 @@ exports.getTodayRecurringOrders = async (req, res) => {
         status: order.status,
         deliveryDate: order.deliveryDate,
         isRecurring: true,
-        expectedEmpties, // ✅ Added: Kitne empties expect karne hain
+        expectedEmpties, // ✅ Now correct: 0 for first-time, actual for refill
         note:
           order.status === "delivered"
-            ? "🔄 Delivered - Collect Empties Now!"
-            : "🔁 Recurring Delivery Pending",
+            ? `🔄 Delivered - ${
+                expectedEmpties > 0
+                  ? `Collect ${expectedEmpties} empties!`
+                  : "First time delivery - no empties expected"
+              }`
+            : `🔁 ${
+                order.withBottles
+                  ? "First time with bottles"
+                  : `Refill order - ${expectedEmpties} empties to collect`
+              } - Delivery Pending`,
       };
     });
 
     res.json({
       success: true,
-      message: `You have ${formatted.length} recurring tasks today (including empties collection)`,
+      message: `You have ${formatted.length} recurring tasks today`,
       today: today.toISOString().split("T")[0],
       orders: formatted,
       stats: {
         total: formatted.length,
         pending: formatted.filter((o) => o.status === "pending").length,
         inProgress: formatted.filter((o) => o.status === "in_progress").length,
-        delivered: formatted.filter((o) => o.status === "delivered").length, // ✅ Added stat
+        delivered: formatted.filter((o) => o.status === "delivered").length,
+        withBottles: formatted.filter((o) => o.withBottles).length,
+        refillOrders: formatted.filter((o) => !o.withBottles).length,
       },
     });
   } catch (err) {
@@ -217,7 +239,7 @@ exports.getTodayRecurringOrders = async (req, res) => {
   }
 };
 
-// COMPLETE ORDER WITH EMPTIES
+// COMPLETE ORDER WITH EMPTIES - CORRECTED VERSION
 exports.completeOrderWithEmpties = async (req, res) => {
   try {
     const { id } = req.params;
@@ -246,7 +268,6 @@ exports.completeOrderWithEmpties = async (req, res) => {
         .json({ error: "damagedEmpties and leakedEmpties cannot be negative" });
     }
 
-    // Validate: damaged + leaked cannot exceed collected
     if (damagedEmpties + leakedEmpties > collectedEmpties) {
       return res.status(400).json({
         error: "Damaged + leaked empties cannot exceed total collected empties",
@@ -263,7 +284,12 @@ exports.completeOrderWithEmpties = async (req, res) => {
         items: {
           include: {
             product: {
-              select: { id: true, isReusable: true, requiresEmptyReturn: true },
+              select: {
+                id: true,
+                isReusable: true,
+                requiresEmptyReturn: true,
+                name: true,
+              },
             },
           },
         },
@@ -284,26 +310,33 @@ exports.completeOrderWithEmpties = async (req, res) => {
         .json({ error: "Order must be marked as delivered first" });
     }
 
-    // === CALCULATE EXPECTED EMPTIES BASED ON WITHBOTTLES ===
+    // === CORRECT EXPECTED EMPTIES CALCULATION ===
     const reusableItems = order.items.filter(
       (i) => i.product.isReusable && i.product.requiresEmptyReturn
     );
 
     let expectedEmpties = 0;
 
+    // ✅ CORRECT LOGIC:
     if (order.withBottles === false) {
-      // Agar withBottles = false hai to customer se UTHAYE GAYE bottles collect karna hai
-      // Expected empties = order ki total reusable quantity
+      // Refill order - expect empties from previous delivery
       expectedEmpties = reusableItems.reduce((sum, i) => sum + i.quantity, 0);
     } else {
-      // Agar withBottles = true hai to customer se USKE PAAS JO EMPTIES HAIN collect karna hai
-      // Expected empties = customer ke paas jo empties hain (can be more or less)
-      // Driver ko report karna hai kitne collect kiye
-      expectedEmpties = order.customer.empties;
+      // First time with bottles - NO empties expected
+      expectedEmpties = 0;
     }
 
-    // Agar withBottles = false hai to validate karo ke exact empties collect kiye
+    // ✅ CORRECT VALIDATION:
+    if (order.withBottles === true && collectedEmpties > 0) {
+      // First time order - should not collect any empties
+      return res.status(400).json({
+        error: "First time order with bottles - no empties should be collected",
+        note: "This is first time delivery with bottles. No empties expected.",
+      });
+    }
+
     if (order.withBottles === false) {
+      // Refill order - must collect exact empties
       const totalExpectedFromOrder = reusableItems.reduce(
         (sum, i) => sum + i.quantity,
         0
@@ -311,16 +344,9 @@ exports.completeOrderWithEmpties = async (req, res) => {
 
       if (collectedEmpties !== totalExpectedFromOrder) {
         return res.status(400).json({
-          error: `WithBottles=false order requires exactly ${totalExpectedFromOrder} empties. You collected ${collectedEmpties}`,
+          error: `Refill order requires exactly ${totalExpectedFromOrder} empties. You collected ${collectedEmpties}`,
         });
       }
-    }
-
-    // Customer ke paas enough empties hone chahiye
-    if (order.customer.empties < collectedEmpties) {
-      return res.status(400).json({
-        error: `Customer has only ${order.customer.empties} empties. Cannot collect ${collectedEmpties}`,
-      });
     }
 
     const goodReturned = collectedEmpties - damagedEmpties - leakedEmpties;
@@ -330,46 +356,44 @@ exports.completeOrderWithEmpties = async (req, res) => {
         .json({ error: "Invalid counts: good returned cannot be negative" });
     }
 
-    // Calculate lost empties (only for withBottles = false)
     let lostEmpties = 0;
-    if (order.withBottles === false) {
-      const totalExpected = reusableItems.reduce(
-        (sum, i) => sum + i.quantity,
-        0
-      );
-      lostEmpties = Math.max(0, totalExpected - collectedEmpties);
+    if (order.withBottles === false && collectedEmpties < expectedEmpties) {
+      lostEmpties = expectedEmpties - collectedEmpties;
     }
 
     await prisma.$transaction(
       async (tx) => {
         // 1. Update customer empties
-        await tx.customer.update({
-          where: { id: order.customerId },
-          data: { empties: { decrement: collectedEmpties } },
-        });
+        if (collectedEmpties > 0) {
+          await tx.customer.update({
+            where: { id: order.customerId },
+            data: { empties: { decrement: collectedEmpties } },
+          });
+        }
 
         // 2. Update global bottle pool
-        // NOTE: withBottles = false ke liye bhi update karna hai kyunki empties wapas aa rahe hain
-        await tx.bottleInventory.upsert({
-          where: { tenantId },
-          update: {
-            withCustomers: { decrement: collectedEmpties },
-            inStock: { increment: goodReturned },
-            repairable: { increment: damagedEmpties },
-            leaked: { increment: leakedEmpties },
-            lost: { increment: lostEmpties },
-          },
-          create: {
-            tenantId,
-            withCustomers: Math.max(0, -collectedEmpties),
-            inStock: goodReturned,
-            repairable: damagedEmpties,
-            leaked: leakedEmpties,
-            lost: lostEmpties,
-          },
-        });
+        if (collectedEmpties > 0) {
+          await tx.bottleInventory.upsert({
+            where: { tenantId },
+            update: {
+              withCustomers: { decrement: collectedEmpties },
+              inStock: { increment: goodReturned },
+              repairable: { increment: damagedEmpties },
+              leaked: { increment: leakedEmpties },
+              lost: { increment: lostEmpties },
+            },
+            create: {
+              tenantId,
+              withCustomers: Math.max(0, -collectedEmpties),
+              inStock: goodReturned,
+              repairable: damagedEmpties,
+              leaked: leakedEmpties,
+              lost: lostEmpties,
+            },
+          });
+        }
 
-        // 3. Return stock to products (proportional, sirf good returned)
+        // 3. Return stock to products
         if (goodReturned > 0 && reusableItems.length > 0) {
           const totalReusableQuantity = reusableItems.reduce(
             (sum, i) => sum + i.quantity,
@@ -400,7 +424,7 @@ exports.completeOrderWithEmpties = async (req, res) => {
           data: { status: "completed" },
         });
 
-        // 5. RECURRING KE LIYE NEXT DATE UPDATE (if applicable)
+        // 5. Update next delivery date for recurring
         if (order.isRecurring && order.subscriptionId) {
           const currentDate = new Date(order.deliveryDate);
           let nextDeliveryDate = new Date(currentDate);
@@ -420,7 +444,6 @@ exports.completeOrderWithEmpties = async (req, res) => {
               break;
           }
 
-          // Update subscription next date
           await tx.subscription.update({
             where: { id: order.subscriptionId },
             data: {
@@ -431,7 +454,6 @@ exports.completeOrderWithEmpties = async (req, res) => {
             },
           });
 
-          // Update order's nextRecurringDate
           await tx.order.update({
             where: { id },
             data: {
@@ -439,11 +461,51 @@ exports.completeOrderWithEmpties = async (req, res) => {
             },
           });
         }
+
+        // 6. Create immediate payment for non-recurring orders
+        if (!order.isRecurring && order.paymentMethod === "cash_on_delivery") {
+          const paymentItems = order.items.map((item) => ({
+            orderId: order.id,
+            orderItemId: item.id,
+            productName: item.product?.name || "Product",
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            depositAmount: item.depositAmount || 0,
+            totalAmount: item.totalPrice || item.unitPrice * item.quantity,
+          }));
+
+          const paymentNumber = `PAY-${Date.now()}-${Math.random()
+            .toString(36)
+            .substr(2, 9)}`;
+
+          const payment = await tx.payment.create({
+            data: {
+              paymentNumber,
+              customerId: order.customerId,
+              tenantId,
+              orderId: order.id,
+              amount: order.totalAmount,
+              pendingAmount: order.totalAmount,
+              collectionType: "IMMEDIATE",
+              dueDate: order.deliveryDate,
+              status: "PENDING",
+              paymentMethod: "cash_on_delivery",
+              paymentItems: {
+                create: paymentItems,
+              },
+            },
+          });
+
+          await tx.order.update({
+            where: { id },
+            data: { paymentId: payment.id },
+          });
+        }
       },
       { timeout: 15000 }
     );
 
-    // REFETCH updated nextDeliveryDate
+    // Refetch updated next delivery date
     let updatedNextDelivery = null;
     if (order.isRecurring && order.subscriptionId) {
       const updatedSubscription = await prisma.subscription.findUnique({
@@ -453,9 +515,29 @@ exports.completeOrderWithEmpties = async (req, res) => {
       updatedNextDelivery = updatedSubscription?.nextDeliveryDate;
     }
 
+    // Check if payment was created
+    const paymentCreated = !order.isRecurring;
+    let paymentInfo = null;
+
+    if (paymentCreated) {
+      const payment = await prisma.payment.findFirst({
+        where: { orderId: id, tenantId },
+        select: {
+          id: true,
+          paymentNumber: true,
+          amount: true,
+          pendingAmount: true,
+        },
+      });
+      paymentInfo = payment;
+    }
+
     res.json({
       success: true,
-      message: "Order completed with empties collection! ✅",
+      message: order.withBottles
+        ? "First time order completed! ✅ (No empties expected)"
+        : "Refill order completed with empties collection! ✅",
+      orderType: order.withBottles ? "First time with bottles" : "Refill order",
       withBottles: order.withBottles,
       expectedEmpties: expectedEmpties,
       collected: collectedEmpties,
@@ -464,16 +546,23 @@ exports.completeOrderWithEmpties = async (req, res) => {
       leaked: leakedEmpties,
       lost: lostEmpties,
       nextDelivery: updatedNextDelivery,
+      paymentCreated,
+      paymentInfo,
+      paymentMessage: paymentCreated
+        ? `Immediate payment created. Amount: ₹${order.totalAmount}. Collect from customer.`
+        : "Recurring order - payment will be generated monthly",
     });
   } catch (err) {
-    console.error("Complete Order Error:", err);
+    console.error("Complete Order Error:", err.message);
+    console.error("Stack:", err.stack);
     res.status(500).json({
       error: "Failed to complete order",
       details: err.message,
     });
   }
 };
-// ✅ NEW: GET TODAY'S ALL ORDERS FOR DRIVER (All statuses including completed)
+
+// ✅ GET TODAY'S ALL ORDERS FOR DRIVER
 exports.getTodayAllOrders = async (req, res) => {
   try {
     if (req.user.role !== "driver") {
@@ -483,14 +572,12 @@ exports.getTodayAllOrders = async (req, res) => {
     const driverId = req.user.id;
     const tenantId = req.derivedTenantId;
 
-    // Today's date range
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    // Get driver's zone
     const driver = await prisma.driver.findUnique({
       where: { id: driverId },
       select: { zoneId: true },
@@ -500,7 +587,6 @@ exports.getTodayAllOrders = async (req, res) => {
       return res.status(404).json({ error: "Driver not found" });
     }
 
-    // Get all today's orders for this driver (ALL statuses)
     const orders = await prisma.order.findMany({
       where: {
         driverId,
@@ -509,7 +595,6 @@ exports.getTodayAllOrders = async (req, res) => {
           gte: today,
           lt: tomorrow,
         },
-        // ✅ ALL statuses included
       },
       include: {
         customer: {
@@ -537,21 +622,27 @@ exports.getTodayAllOrders = async (req, res) => {
         subscription: true,
       },
       orderBy: [
-        { status: "asc" }, // Pending pehle
+        { status: "asc" },
         { deliveryDate: "asc" },
         { createdAt: "desc" },
       ],
     });
 
-    // Format with expected empties
+    // ✅ CORRECT LOGIC:
     const formattedOrders = orders.map((order) => {
       const reusableItems = order.items.filter(
         (i) => i.product.isReusable && i.product.requiresEmptyReturn
       );
-      const expectedEmpties = reusableItems.reduce(
-        (sum, i) => sum + i.quantity,
-        0
-      );
+
+      let expectedEmpties = 0;
+
+      if (order.withBottles === false) {
+        // Refill order
+        expectedEmpties = reusableItems.reduce((sum, i) => sum + i.quantity, 0);
+      } else {
+        // First time order - NO empties
+        expectedEmpties = 0;
+      }
 
       // Status-based action note
       let actionNote = "";
@@ -566,7 +657,10 @@ exports.getTodayAllOrders = async (req, res) => {
           actionNote = "📦 On the way to customer";
           break;
         case "delivered":
-          actionNote = "✅ Delivered - Collect empties";
+          actionNote =
+            expectedEmpties > 0
+              ? `✅ Delivered - Collect ${expectedEmpties} empties`
+              : "✅ Delivered - First time, no empties";
           break;
         case "completed":
           actionNote = "🏁 Completed with empties";
@@ -579,6 +673,7 @@ exports.getTodayAllOrders = async (req, res) => {
         id: order.id,
         orderNumber: order.orderNumberDisplay,
         totalAmount: order.totalAmount,
+        withBottles: order.withBottles,
         customer: {
           id: order.customer.id,
           name: order.customer.name,
@@ -602,14 +697,13 @@ exports.getTodayAllOrders = async (req, res) => {
               preferredTime: order.subscription.preferredTime,
             }
           : null,
-        expectedEmpties,
+        expectedEmpties, // ✅ Correct now
         customerEmpties: order.customer.empties,
         actionNote,
         createdAt: order.createdAt,
       };
     });
 
-    // Statistics
     const stats = {
       total: formattedOrders.length,
       pending: formattedOrders.filter((o) => o.status === "pending").length,
@@ -637,10 +731,9 @@ exports.getTodayAllOrders = async (req, res) => {
   }
 };
 
-// DRIVER KO SIRF USKE ASSIGNED ORDERS DIKHAO - Driver app ke liye
+// ✅ DRIVER KO SIRF USKE ASSIGNED ORDERS DIKHAO
 exports.getMyAssignedOrders = async (req, res) => {
   try {
-    // ✅ Role check – sirf driver hi access kare
     if (req.user.role !== "driver") {
       return res
         .status(403)
@@ -655,7 +748,7 @@ exports.getMyAssignedOrders = async (req, res) => {
         driverId,
         tenantId,
         status: {
-          in: ["pending", "in_progress", "out_for_delivery", "delivered"], // ✅ Completed exclude kiya, kyunki alag flow
+          in: ["pending", "in_progress", "out_for_delivery", "delivered"],
         },
       },
       include: {
@@ -664,7 +757,7 @@ exports.getMyAssignedOrders = async (req, res) => {
             name: true,
             phone: true,
             address: true,
-            empties: true, // ✅ Added for empties info
+            empties: true,
           },
         },
         zone: { select: { name: true } },
@@ -680,7 +773,7 @@ exports.getMyAssignedOrders = async (req, res) => {
             },
           },
         },
-        subscription: true, // ✅ For recurring info
+        subscription: true,
       },
       orderBy: [
         { status: "asc" },
@@ -689,7 +782,6 @@ exports.getMyAssignedOrders = async (req, res) => {
       ],
     });
 
-    // Extra info for driver
     const today = new Date().toDateString();
     const stats = {
       totalToday: orders.filter(
@@ -706,25 +798,32 @@ exports.getMyAssignedOrders = async (req, res) => {
       ).length,
     };
 
-    // ✅ Add expected empties to each order
+    // ✅ CORRECT LOGIC:
     const ordersWithEmpties = orders.map((order) => {
       const reusableItems = order.items.filter(
         (i) => i.product.isReusable && i.product.requiresEmptyReturn
       );
-      const expectedEmpties = reusableItems.reduce(
-        (sum, i) => sum + i.quantity,
-        0
-      );
+
+      let expectedEmpties = 0;
+
+      if (order.withBottles === false) {
+        // Refill order
+        expectedEmpties = reusableItems.reduce((sum, i) => sum + i.quantity, 0);
+      } else {
+        // First time order - NO empties
+        expectedEmpties = 0;
+      }
 
       return {
         ...order,
-        expectedEmpties,
+        expectedEmpties, // ✅ Now correct
         isRecurring: order.isRecurring || false,
         customerEmpties: order.customer.empties,
       };
     });
 
     res.json({
+      success: true,
       message:
         "Your assigned orders (up to delivered - complete empties separately)",
       stats,
@@ -736,7 +835,7 @@ exports.getMyAssignedOrders = async (req, res) => {
   }
 };
 
-// MARK ORDER AS OUT FOR DELIVERY - Driver app ke liye
+// MARK ORDER AS OUT FOR DELIVERY
 exports.markOutForDelivery = async (req, res) => {
   try {
     const { id } = req.params;
@@ -772,6 +871,7 @@ exports.markOutForDelivery = async (req, res) => {
     });
 
     res.json({
+      success: true,
       message: "Order marked as out for delivery",
       order: updatedOrder,
     });
@@ -781,8 +881,7 @@ exports.markOutForDelivery = async (req, res) => {
   }
 };
 
-// MARK ORDER AS DELIVERED (PAANI DIYA) - Driver app ke liye
-// ✅ FIXED: Response mein expected empties add kiya reminder ke liye
+// MARK ORDER AS DELIVERED
 exports.markAsDelivered = async (req, res) => {
   try {
     const { id } = req.params;
@@ -807,7 +906,7 @@ exports.markAsDelivered = async (req, res) => {
           select: {
             name: true,
             phone: true,
-            empties: true, // ✅ Added for info
+            empties: true,
           },
         },
       },
@@ -826,14 +925,22 @@ exports.markAsDelivered = async (req, res) => {
       });
     }
 
-    // Calculate expected empties for reminder
+    // ✅ CORRECT EXPECTED EMPTIES CALCULATION
     const reusableItems = order.items.filter(
       (i) => i.product.isReusable && i.product.requiresEmptyReturn
     );
-    const totalExpectedEmpties = reusableItems.reduce(
-      (sum, i) => sum + i.quantity,
-      0
-    );
+
+    let totalExpectedEmpties = 0;
+
+    if (order.withBottles === false) {
+      totalExpectedEmpties = reusableItems.reduce(
+        (sum, i) => sum + i.quantity,
+        0
+      );
+    } else {
+      // First time - no empties
+      totalExpectedEmpties = 0;
+    }
 
     const updatedOrder = await prisma.order.update({
       where: { id },
@@ -845,11 +952,10 @@ exports.markAsDelivered = async (req, res) => {
             product: { select: { name: true, isReusable: true } },
           },
         },
-        subscription: true, // ✅ For recurring
+        subscription: true,
       },
     });
 
-    // Update driver stats
     await prisma.driver.update({
       where: { id: driverId },
       data: {
@@ -859,13 +965,18 @@ exports.markAsDelivered = async (req, res) => {
     });
 
     res.json({
-      message: `Order delivered! Expected empties to collect: ${totalExpectedEmpties} (Customer has ${order.customer.empties} available). Complete with empties next.`,
+      success: true,
+      message: `Order delivered! ${
+        totalExpectedEmpties > 0
+          ? `Collect ${totalExpectedEmpties} empties.`
+          : "First time delivery - no empties to collect."
+      }`,
       order: updatedOrder,
       expectedEmpties: totalExpectedEmpties,
       customerEmpties: order.customer.empties,
       nextAction: updatedOrder.isRecurring
-        ? "Collect empties & schedule next recurring"
-        : "Collect empties",
+        ? "Complete order to schedule next delivery"
+        : "Complete order",
     });
   } catch (err) {
     console.error("Mark delivered error:", err);
@@ -873,7 +984,7 @@ exports.markAsDelivered = async (req, res) => {
   }
 };
 
-// SEND OTP (Public) - Driver login ke liye
+// SEND OTP (Public)
 exports.sendDriverOTP = async (req, res) => {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: "Phone required" });
@@ -887,7 +998,7 @@ exports.sendDriverOTP = async (req, res) => {
   res.json({ message: "OTP sent to driver" });
 };
 
-// VERIFY OTP & LOGIN (Public) - Driver login ke liye
+// VERIFY OTP & LOGIN (Public)
 exports.verifyDriverOTP = async (req, res) => {
   const { phone, otp } = req.body;
   if (!phone || !otp)

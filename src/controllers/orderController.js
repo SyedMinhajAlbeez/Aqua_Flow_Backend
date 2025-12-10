@@ -1,4 +1,4 @@
-// src/controllers/orderController.js - UPDATED WITH RECURRING SUPPORT
+// src/controllers/orderController.js - FIXED VERSION
 
 const prisma = require("../prisma/client");
 const { sendOrderStatusUpdate } = require("../utils/notificationService");
@@ -15,7 +15,7 @@ exports.createOrder = async (req, res) => {
       isRecurring = false,
       recurrence = "NONE",
       preferredTime = null,
-      withBottles = true, // ← NAYA FIELD: Default true
+      withBottles = true, // Yeh parameter constant hai, ise reassign nahi kar sakte
     } = req.body;
 
     const tenantId = req.derivedTenantId;
@@ -51,34 +51,6 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ error: "Deposit cannot be negative" });
     }
 
-    // === WITHBOTTLES VALIDATION ===
-    // Agar withBottles false hai to check karo ke customer ke paas pehle se bottles hain
-    if (withBottles === false || withBottles === "false") {
-      // Check if customer already has bottles for this product
-      const hasPreviousReusableOrders = await prisma.order.findFirst({
-        where: {
-          customerId: effectiveCustomerId,
-          tenantId,
-          items: {
-            some: {
-              product: {
-                isReusable: true,
-              },
-            },
-          },
-          status: { in: ["completed", "delivered"] },
-        },
-      });
-
-      if (!hasPreviousReusableOrders) {
-        return res.status(400).json({
-          error:
-            "Customer must have received bottles before to order without bottles",
-          solution: "Set withBottles to true for first-time bottle delivery",
-        });
-      }
-    }
-
     // === FETCH CUSTOMER WITH ZONE ===
     const customer = await prisma.customer.findUnique({
       where: { id: effectiveCustomerId, tenantId },
@@ -87,6 +59,80 @@ exports.createOrder = async (req, res) => {
     if (!customer) return res.status(404).json({ error: "Customer not found" });
     if (!customer.zoneId)
       return res.status(400).json({ error: "Customer has no zone assigned" });
+
+    // === PROCESS ITEMS FIRST TO DETERMINE PRODUCT TYPES ===
+    let totalProductPrice = 0;
+    let totalRequiredDeposit = 0;
+    const orderItems = [];
+    let totalReusableDelivered = 0;
+    let circulatingReusableDelivered = 0;
+    let expectedEmpties = 0;
+    let hasReusableProduct = false;
+    let hasNonReusableProduct = false;
+    let nonReusableProductNames = [];
+
+    // Store products for later use
+    const products = [];
+
+    for (const item of items) {
+      const product = await prisma.product.findUnique({
+        where: { id: item.productId, tenantId },
+      });
+      if (!product || product.status !== "active") {
+        return res
+          .status(400)
+          .json({ error: `Product not available: ${item.productId}` });
+      }
+
+      products.push({
+        ...product,
+        quantity: parseInt(item.quantity) || 1,
+      });
+
+      if (product.isReusable) {
+        hasReusableProduct = true;
+      } else {
+        hasNonReusableProduct = true;
+        nonReusableProductNames.push(product.name);
+      }
+    }
+
+    // === EFFECTIVE WITHBOTTLES LOGIC ===
+    // Ek naya variable banaye jo hum modify kar sake
+    let effectiveWithBottles = withBottles;
+
+    // WITHBOTTLES VALIDATION - ONLY FOR REUSABLE PRODUCTS
+    if (hasReusableProduct) {
+      // Agar withBottles false hai to check karo ke customer ke paas pehle se bottles hain
+      if (effectiveWithBottles === false || effectiveWithBottles === "false") {
+        // Check if customer already has bottles for this product
+        const hasPreviousReusableOrders = await prisma.order.findFirst({
+          where: {
+            customerId: effectiveCustomerId,
+            tenantId,
+            items: {
+              some: {
+                product: {
+                  isReusable: true,
+                },
+              },
+            },
+            status: { in: ["completed", "delivered"] },
+          },
+        });
+
+        if (!hasPreviousReusableOrders) {
+          return res.status(400).json({
+            error:
+              "Customer must have received bottles before to order without bottles",
+            solution: "Set withBottles to true for first-time bottle delivery",
+          });
+        }
+      }
+    } else {
+      // Agar sirf non-reusable products hain, to withBottles always true ho (ya irrelevant)
+      effectiveWithBottles = true; // Yeh new variable hai, ise modify kar sakte hain
+    }
 
     // === DRIVER VALIDATION (only if provided) ===
     let initialStatus = "pending";
@@ -104,31 +150,20 @@ exports.createOrder = async (req, res) => {
       initialStatus = "in_progress";
     }
 
-    // === PROCESS ITEMS WITH WITHBOTTLES LOGIC ===
-    let totalProductPrice = 0;
-    let totalRequiredDeposit = 0;
-    const orderItems = [];
-    let totalReusableDelivered = 0;
-    let circulatingReusableDelivered = 0;
-    let expectedEmpties = 0;
-    let hasReusableProduct = false;
-    let hasNonReusableProduct = false;
-    let nonReusableProductNames = [];
-
-    // Check bottle inventory for withBottles true
-    if (withBottles === true || withBottles === "true") {
+    // === Check bottle inventory for withBottles true - ONLY FOR REUSABLE PRODUCTS ===
+    if (
+      hasReusableProduct &&
+      (effectiveWithBottles === true || effectiveWithBottles === "true")
+    ) {
       const bottleInventory = await prisma.bottleInventory.findUnique({
         where: { tenantId },
       });
 
-      for (const item of items) {
-        const product = await prisma.product.findUnique({
-          where: { id: item.productId, tenantId },
-        });
+      for (const productData of products) {
+        const product = productData;
+        const quantity = productData.quantity;
 
-        if (product && product.isReusable) {
-          const quantity = parseInt(item.quantity) || 1;
-
+        if (product.isReusable) {
           if (bottleInventory && bottleInventory.inStock < quantity) {
             return res.status(400).json({
               error: `Not enough bottles in stock for ${product.name}. Available: ${bottleInventory.inStock}, Required: ${quantity}`,
@@ -138,17 +173,10 @@ exports.createOrder = async (req, res) => {
       }
     }
 
-    for (const item of items) {
-      const product = await prisma.product.findUnique({
-        where: { id: item.productId, tenantId },
-      });
-      if (!product || product.status !== "active") {
-        return res
-          .status(400)
-          .json({ error: `Product not available: ${item.productId}` });
-      }
-
-      const quantity = parseInt(item.quantity) || 1;
+    // === PROCESS ITEMS FOR CALCULATIONS ===
+    for (const productData of products) {
+      const product = productData;
+      const quantity = productData.quantity;
 
       // Stock check - withBottles se independent (product stock)
       const inventory = await prisma.productInventory.findUnique({
@@ -169,20 +197,10 @@ exports.createOrder = async (req, res) => {
       // === DEPOSIT CALCULATION BASED ON WITHBOTTLES ===
       if (
         product.isReusable &&
-        (withBottles === true || withBottles === "true")
+        (effectiveWithBottles === true || effectiveWithBottles === "true")
       ) {
         // Sirf tab deposit add karo jab bottles de rahe hain
         totalRequiredDeposit += quantity * product.depositAmount;
-        hasReusableProduct = true;
-      } else if (
-        product.isReusable &&
-        (withBottles === false || withBottles === "false")
-      ) {
-        // Bottles nahi de rahe, to deposit nahi
-        hasReusableProduct = true;
-      } else {
-        hasNonReusableProduct = true;
-        nonReusableProductNames.push(product.name);
       }
 
       orderItems.push({
@@ -190,7 +208,8 @@ exports.createOrder = async (req, res) => {
         quantity,
         unitPrice: product.price,
         depositAmount:
-          product.isReusable && (withBottles === true || withBottles === "true")
+          product.isReusable &&
+          (effectiveWithBottles === true || effectiveWithBottles === "true")
             ? product.depositAmount
             : 0,
         totalPrice: itemTotal,
@@ -198,7 +217,7 @@ exports.createOrder = async (req, res) => {
 
       // === BOTTLE TRACKING BASED ON WITHBOTTLES ===
       if (product.isReusable) {
-        if (withBottles === true || withBottles === "true") {
+        if (effectiveWithBottles === true || effectiveWithBottles === "true") {
           totalReusableDelivered += quantity;
           if (product.requiresEmptyReturn) {
             circulatingReusableDelivered += quantity;
@@ -249,7 +268,8 @@ exports.createOrder = async (req, res) => {
 
     // Deposit validation - agar withBottles false hai to acceptableDepositAmount 0 hona chahiye
     if (
-      (withBottles === false || withBottles === "false") &&
+      hasReusableProduct &&
+      (effectiveWithBottles === false || effectiveWithBottles === "false") &&
       acceptableDepositAmount > 0
     ) {
       return res.status(400).json({
@@ -309,12 +329,14 @@ exports.createOrder = async (req, res) => {
             isRecurring,
             recurrence: isRecurring ? recurrence : "NONE",
             nextRecurringDate,
-            withBottles: withBottles === true || withBottles === "true", // ← SAVE WITHBOTTLES
+            withBottles: hasReusableProduct
+              ? effectiveWithBottles === true || effectiveWithBottles === "true"
+              : true,
             items: { create: orderItems },
           },
         });
 
-        // 2. Update Customer Security Deposit - SIRF WITHBOTTLES TRUE HONE PAR
+        // 2. Update Customer Security Deposit - SIRF WITHBOTTLES TRUE HONE PAR AUR REUSABLE PRODUCTS KE LIYE
         if (acceptableDepositAmount > 0) {
           await tx.customer.update({
             where: { id: effectiveCustomerId },
@@ -335,10 +357,11 @@ exports.createOrder = async (req, res) => {
           });
         }
 
-        // 4. Global Bottle Pool Update - SIRF WITHBOTTLES TRUE HONE PAR
+        // 4. Global Bottle Pool Update - SIRF WITHBOTTLES TRUE HONE PAR AUR REUSABLE PRODUCTS KE LIYE
         if (
+          hasReusableProduct &&
           totalReusableDelivered > 0 &&
-          (withBottles === true || withBottles === "true")
+          (effectiveWithBottles === true || effectiveWithBottles === "true")
         ) {
           await tx.bottleInventory.upsert({
             where: { tenantId },
@@ -354,10 +377,11 @@ exports.createOrder = async (req, res) => {
           });
         }
 
-        // 5. Customer empties tracking - SIRF WITHBOTTLES TRUE HONE PAR
+        // 5. Customer empties tracking - SIRF WITHBOTTLES TRUE HONE PAR AUR REUSABLE PRODUCTS KE LIYE
         if (
+          hasReusableProduct &&
           circulatingReusableDelivered > 0 &&
-          (withBottles === true || withBottles === "true")
+          (effectiveWithBottles === true || effectiveWithBottles === "true")
         ) {
           await tx.customer.update({
             where: { id: effectiveCustomerId },
@@ -373,12 +397,12 @@ exports.createOrder = async (req, res) => {
         if (
           isRecurring &&
           hasReusableProduct &&
-          (withBottles === true || withBottles === "true")
+          (effectiveWithBottles === true || effectiveWithBottles === "true")
         ) {
           // For each reusable product, create a subscription
-          for (const item of orderItems) {
+          for (const orderItem of orderItems) {
             const product = await tx.product.findUnique({
-              where: { id: item.productId },
+              where: { id: orderItem.productId },
             });
 
             if (product.isReusable) {
@@ -387,7 +411,7 @@ exports.createOrder = async (req, res) => {
                   customerId: effectiveCustomerId,
                   tenantId,
                   productId: product.id,
-                  quantity: item.quantity,
+                  quantity: orderItem.quantity,
                   recurrence,
                   deliveryDayOfWeek: new Date(deliveryDate).getDay(),
                   nextDeliveryDate: nextRecurringDate,
@@ -481,25 +505,35 @@ exports.createOrder = async (req, res) => {
       success: true,
       message: isRecurring
         ? `Recurring order created successfully! ${
-            withBottles === true || withBottles === "true"
-              ? "With bottles"
-              : "Refill only"
+            hasReusableProduct
+              ? effectiveWithBottles === true || effectiveWithBottles === "true"
+                ? "With bottles"
+                : "Refill only"
+              : ""
           }.`
         : `Order created successfully! ${
-            withBottles === true || withBottles === "true"
-              ? "With bottles"
-              : "Refill only"
+            hasReusableProduct
+              ? effectiveWithBottles === true || effectiveWithBottles === "true"
+                ? "With bottles"
+                : "Refill only"
+              : ""
           }.`,
       order: {
         ...result.order,
         isRecurring,
         recurrence: isRecurring ? recurrence : "NONE",
         nextRecurringDate: result.order.nextRecurringDate,
-        withBottles: withBottles === true || withBottles === "true",
+        withBottles: hasReusableProduct
+          ? effectiveWithBottles === true || effectiveWithBottles === "true"
+          : true,
       },
       subscription: result.subscription,
       details: {
-        withBottles: withBottles === true || withBottles === "true",
+        withBottles: hasReusableProduct
+          ? effectiveWithBottles === true || effectiveWithBottles === "true"
+          : true,
+        hasReusableProduct,
+        hasNonReusableProduct,
         totalRequiredDeposit,
         acceptableDepositAmount,
         reusableBottlesDelivered: totalReusableDelivered,

@@ -1,8 +1,9 @@
-// src/utils/dailyCronJobs.js
-
 const prisma = require("../prisma/client");
 const cron = require("node-cron");
-const { sendPushNotification, sendSMS } = require("../utils/notificationService");
+const {
+  sendPushNotification,
+  sendSMS,
+} = require("../utils/notificationService");
 
 // =======================================================
 // 1. DAILY: RESET DRIVER TODAY_DELIVERIES (12:05 AM)
@@ -497,7 +498,7 @@ cron.schedule("0 0 1 * *", async () => {
 });
 
 // =======================================================
-// 6. DAILY: CHECK FOR MISSED DELIVERIES (8 PM)
+// 6. DAILY: CHECK FOR MISSED DELIVERIES (8 PM) - UPDATED WITH PAYMENT CHECK
 // =======================================================
 cron.schedule("0 20 * * *", async () => {
   console.log(
@@ -522,31 +523,57 @@ cron.schedule("0 20 * * *", async () => {
         status: {
           in: ["pending", "in_progress"],
         },
+        // ✅ Don't mark failed if payment already collected
+        OR: [{ paymentStatus: { not: "PAID" } }, { paymentStatus: null }],
       },
       include: {
         customer: true,
         subscription: true,
+        payment: true, // Check if payment exists
       },
     });
 
     for (const order of missedOrders) {
-      // Mark as failed
-      await prisma.order.update({
-        where: { id: order.id },
-        data: { status: "failed" },
-      });
+      try {
+        // ✅ Skip if immediate payment was already collected
+        if (order.payment && order.payment.status === "PAID") {
+          console.log(
+            `Skipping order ${order.orderNumberDisplay} - payment already collected`
+          );
+          continue;
+        }
 
-      // Update subscription missed count
-      if (order.subscriptionId) {
-        await prisma.subscription.update({
-          where: { id: order.subscriptionId },
-          data: { missedDeliveries: { increment: 1 } },
+        // Mark as failed
+        await prisma.order.update({
+          where: { id: order.id },
+          data: {
+            status: "failed",
+            paymentStatus: "CANCELLED", // Update payment status too
+          },
         });
-      }
 
-      console.log(
-        `Marked order ${order.orderNumberDisplay} as failed (missed delivery)`
-      );
+        // Update subscription missed count
+        if (order.subscriptionId) {
+          await prisma.subscription.update({
+            where: { id: order.subscriptionId },
+            data: { missedDeliveries: { increment: 1 } },
+          });
+        }
+
+        // ✅ Cancel any pending immediate payment
+        if (order.paymentId && order.payment?.status === "PENDING") {
+          await prisma.payment.update({
+            where: { id: order.paymentId },
+            data: { status: "CANCELLED" },
+          });
+        }
+
+        console.log(
+          `Marked order ${order.orderNumberDisplay} as failed (missed delivery)`
+        );
+      } catch (error) {
+        console.error(`Error processing missed order ${order.id}:`, error);
+      }
     }
 
     console.log(
@@ -666,18 +693,432 @@ cron.schedule("30 0 * * *", async () => {
   }
 });
 
+// =======================================================
+// 9. MONTHLY: GENERATE PAYMENTS FOR RECURRING ORDERS (1st of month, 2 AM)
+// =======================================================
+cron.schedule("0 2 1 * *", async () => {
+  console.log(
+    "Cron: Generating monthly payments for recurring orders...",
+    new Date().toLocaleString("en-PK")
+  );
+
+  try {
+    // Get all tenants
+    const tenants = await prisma.tenant.findMany({
+      where: { status: "active" },
+    });
+
+    let totalGenerated = 0;
+
+    for (const tenant of tenants) {
+      try {
+        // Get all completed recurring orders from previous month
+        const currentDate = new Date();
+        const previousMonthStart = new Date(
+          currentDate.getFullYear(),
+          currentDate.getMonth() - 1,
+          1
+        );
+        const previousMonthEnd = new Date(
+          currentDate.getFullYear(),
+          currentDate.getMonth(),
+          0
+        );
+
+        console.log(
+          `Processing tenant ${
+            tenant.name
+          }: ${previousMonthStart.toDateString()} to ${previousMonthEnd.toDateString()}`
+        );
+
+        // Find subscriptions with completed orders in previous month
+        const subscriptions = await prisma.subscription.findMany({
+          where: {
+            tenantId: tenant.id,
+            status: "ACTIVE",
+            orders: {
+              some: {
+                deliveryDate: {
+                  gte: previousMonthStart,
+                  lte: previousMonthEnd,
+                },
+                status: "completed",
+                paymentId: null, // Not already linked to a payment
+                isRecurring: true,
+              },
+            },
+          },
+          include: {
+            customer: true,
+            product: true,
+            orders: {
+              where: {
+                deliveryDate: {
+                  gte: previousMonthStart,
+                  lte: previousMonthEnd,
+                },
+                status: "completed",
+                paymentId: null,
+                isRecurring: true,
+              },
+              include: {
+                items: {
+                  include: {
+                    product: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+        console.log(
+          `Found ${subscriptions.length} subscriptions with completed orders in previous month`
+        );
+
+        for (const subscription of subscriptions) {
+          if (subscription.orders.length === 0) continue;
+
+          // Calculate total amount for the month
+          let totalAmount = 0;
+          const paymentItems = [];
+
+          for (const order of subscription.orders) {
+            for (const item of order.items) {
+              totalAmount += item.totalPrice;
+
+              paymentItems.push({
+                orderId: order.id,
+                orderItemId: item.id,
+                productName: item.product.name,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+                depositAmount: item.depositAmount,
+                totalAmount: item.totalPrice,
+              });
+            }
+          }
+
+          if (totalAmount === 0) continue;
+
+          // Create monthly payment record
+          const payment = await prisma.payment.create({
+            data: {
+              paymentNumber: `PAY-${Date.now()}-${Math.random()
+                .toString(36)
+                .substr(2, 9)}`,
+              customerId: subscription.customerId,
+              tenantId: tenant.id,
+              subscriptionId: subscription.id,
+              amount: totalAmount,
+              pendingAmount: totalAmount,
+              collectionType: "MONTHLY",
+              dueDate: new Date(
+                currentDate.getFullYear(),
+                currentDate.getMonth(),
+                5
+              ), // 5th of current month
+              month: currentDate.getMonth(), // Previous month (0-indexed)
+              year: currentDate.getFullYear(),
+              cycleStartDate: previousMonthStart,
+              cycleEndDate: previousMonthEnd,
+              status: "PENDING",
+              paymentMethod: "cash_on_delivery",
+              PaymentItem: {
+                create: paymentItems,
+              },
+            },
+          });
+
+          // Link orders to this payment
+          await prisma.order.updateMany({
+            where: {
+              id: {
+                in: subscription.orders.map((o) => o.id),
+              },
+            },
+            data: {
+              paymentId: payment.id,
+            },
+          });
+
+          // Update customer due amount
+          await prisma.customer.update({
+            where: { id: subscription.customerId },
+            data: {
+              dueAmount: { increment: totalAmount },
+            },
+          });
+
+          totalGenerated++;
+          console.log(
+            `Created payment ${payment.paymentNumber} for ${subscription.customer.name}: ₹${totalAmount}`
+          );
+        }
+
+        console.log(
+          `Generated payments for ${subscriptions.length} subscriptions in tenant ${tenant.name}`
+        );
+      } catch (error) {
+        console.error(
+          `Error generating payments for tenant ${tenant.name}:`,
+          error
+        );
+      }
+    }
+
+    console.log(`Success: Generated ${totalGenerated} monthly payments`);
+  } catch (error) {
+    console.error("Error generating monthly payments:", error);
+  }
+});
+
+// =======================================================
+// 10. DAILY: SEND PAYMENT DUE REMINDERS (10 AM)
+// =======================================================
+cron.schedule("0 10 * * *", async () => {
+  console.log(
+    "Cron: Sending payment due reminders...",
+    new Date().toLocaleString("en-PK")
+  );
+
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Payments due in next 3 days
+    const threeDaysLater = new Date(today);
+    threeDaysLater.setDate(threeDaysLater.getDate() + 3);
+
+    const duePayments = await prisma.payment.findMany({
+      where: {
+        status: { in: ["PENDING", "PARTIAL"] },
+        dueDate: {
+          gte: today,
+          lte: threeDaysLater,
+        },
+      },
+      include: {
+        customer: {
+          include: {
+            orders: {
+              where: {
+                paymentId: { not: null },
+              },
+              orderBy: { createdAt: "desc" },
+              take: 1,
+            },
+          },
+        },
+        subscription: {
+          include: {
+            product: true,
+          },
+        },
+      },
+    });
+
+    let sent = 0;
+    let failed = 0;
+
+    for (const payment of duePayments) {
+      try {
+        const daysUntilDue = Math.ceil(
+          (payment.dueDate - today) / (1000 * 60 * 60 * 24)
+        );
+
+        let message = "";
+        let title = "";
+
+        if (daysUntilDue === 0) {
+          title = "Payment Due Today";
+          message = `📅 Payment Due Today: ₹${
+            payment.pendingAmount
+          } for your monthly ${
+            payment.subscription?.product?.name || "subscription"
+          } is due today.`;
+        } else if (daysUntilDue === 1) {
+          title = "Payment Due Tomorrow";
+          message = `📅 Payment Due Tomorrow: ₹${
+            payment.pendingAmount
+          } for your monthly ${
+            payment.subscription?.product?.name || "subscription"
+          } is due tomorrow.`;
+        } else {
+          title = "Payment Due Soon";
+          message = `📅 Payment Due in ${daysUntilDue} days: ₹${
+            payment.pendingAmount
+          } for your monthly ${
+            payment.subscription?.product?.name || "subscription"
+          }.`;
+        }
+
+        // Send notification
+        if (payment.customer) {
+          await sendPushNotification(payment.customer.id, {
+            title: title,
+            body: message,
+            data: {
+              paymentId: payment.id,
+              type: "PAYMENT_REMINDER",
+              amount: payment.pendingAmount,
+              dueDate: payment.dueDate,
+            },
+          });
+
+          // Send SMS (optional)
+          if (payment.customer.phone) {
+            await sendSMS(payment.customer.phone, message);
+          }
+
+          sent++;
+          console.log(
+            `Sent payment reminder to ${payment.customer.name} for payment ${payment.paymentNumber}`
+          );
+        }
+      } catch (error) {
+        console.error(
+          `Failed to send payment reminder for payment ${payment.id}:`,
+          error
+        );
+        failed++;
+      }
+    }
+
+    console.log(
+      `Success: Sent ${sent} payment due reminders, Failed: ${failed}`
+    );
+  } catch (error) {
+    console.error("Error sending payment reminders:", error);
+  }
+});
+
+// =======================================================
+// 11. DAILY: MARK OVERDUE PAYMENTS (12:00 PM)
+// =======================================================
+cron.schedule("0 12 * * *", async () => {
+  console.log(
+    "Cron: Marking overdue payments...",
+    new Date().toLocaleString("en-PK")
+  );
+
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Mark payments that are past due date as OVERDUE
+    const overdueCount = await prisma.payment.updateMany({
+      where: {
+        status: { in: ["PENDING", "PARTIAL"] },
+        dueDate: {
+          lt: today,
+        },
+      },
+      data: {
+        status: "OVERDUE",
+      },
+    });
+
+    console.log(`Success: Marked ${overdueCount.count} payments as OVERDUE`);
+
+    // Send notifications for newly overdue payments
+    if (overdueCount.count > 0) {
+      const overduePayments = await prisma.payment.findMany({
+        where: {
+          status: "OVERDUE",
+          dueDate: {
+            lt: today,
+            gte: new Date(today.getTime() - 24 * 60 * 60 * 1000), // Became overdue in last 24 hours
+          },
+        },
+        include: {
+          customer: true,
+        },
+      });
+
+      for (const payment of overduePayments) {
+        try {
+          if (payment.customer) {
+            await sendPushNotification(payment.customer.id, {
+              title: "Payment Overdue",
+              body: `⚠️ Your payment of ₹${payment.pendingAmount} is overdue. Please pay as soon as possible.`,
+              data: {
+                paymentId: payment.id,
+                type: "PAYMENT_OVERDUE",
+                amount: payment.pendingAmount,
+              },
+            });
+          }
+        } catch (error) {
+          console.error(
+            `Failed to send overdue notification for payment ${payment.id}:`,
+            error
+          );
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error marking overdue payments:", error);
+  }
+});
+
+// =======================================================
+// 12. WEEKLY: UPDATE DRIVER RATINGS (Sunday at 11 PM)
+// =======================================================
+cron.schedule("0 23 * * 0", async () => {
+  console.log(
+    "Cron: Updating driver ratings...",
+    new Date().toLocaleString("en-PK")
+  );
+
+  try {
+    // Get all drivers with ratings
+    const drivers = await prisma.driver.findMany({
+      where: {
+        totalRatings: { gt: 0 },
+      },
+    });
+
+    let updated = 0;
+
+    for (const driver of drivers) {
+      try {
+        // Calculate average rating (you might want to fetch actual ratings from a separate table)
+        // For now, we're just updating based on existing rating field
+        // You can implement actual rating calculation logic here
+
+        console.log(
+          `Driver ${driver.name} has rating ${driver.rating} from ${driver.totalRatings} ratings`
+        );
+        updated++;
+      } catch (error) {
+        console.error(`Error updating rating for driver ${driver.id}:`, error);
+      }
+    }
+
+    console.log(`Success: Updated ratings for ${updated} drivers`);
+  } catch (error) {
+    console.error("Error updating driver ratings:", error);
+  }
+});
+
 console.log(`
 ✅ Daily Cron Jobs Initialized
 ================================
 Schedule:
 1. 12:05 AM  - Reset driver deliveries
-2. 3:00 AM   - Create next week's recurring orders (WITHBOTTLES LOGIC)
-3. 6:00 AM   - Convert scheduled → pending
-4. 8:00 PM   - Check missed deliveries
-5. 9:00 PM   - Send tomorrow's notifications
-6. 12:00 AM (1st) - Cleanup old subscriptions
-7. Every 4 hours - Low stock alerts
-8. 12:30 AM  - Update customer statuses
+2. 12:30 AM  - Update customer statuses
+3. 2:00 AM (1st) - Generate monthly payments
+4. 3:00 AM   - Create next week's recurring orders
+5. 6:00 AM   - Convert scheduled → pending
+6. 10:00 AM  - Send payment due reminders
+7. 12:00 PM  - Mark overdue payments
+8. Every 4h  - Low stock alerts
+9. 8:00 PM   - Check missed deliveries
+10. 9:00 PM  - Send tomorrow's notifications
+11. 11:00 PM (Sun) - Update driver ratings
+12. 12:00 AM (1st) - Cleanup old subscriptions
 ================================
 `);
+
 module.exports = cron;

@@ -8,6 +8,12 @@ router.use("/auth", require("./authRoutes"));
 router.use("/companies", protect, require("./companyRoutes"));
 router.use("/users", protect, tenantMiddleware, require("./userRoutes"));
 router.use(
+  "/app/driver/payment",
+  protect,
+  tenantMiddleware,
+  require("./paymentRoutes")
+);
+router.use(
   "/customer/recurring",
   protect,
   tenantMiddleware,
