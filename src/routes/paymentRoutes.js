@@ -10,10 +10,12 @@ const {
   getAllPayments,
   updatePayment,
   deletePayment,
+  getDriverCollectionHistory,
 } = require("../controllers/paymentController");
 
 // Driver routes
 router.get("/today", getTodaysPayments);
+router.get("/history", getDriverCollectionHistory);
 router.post("/collect", collectPayment);
 
 // Customer routes

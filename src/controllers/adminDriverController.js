@@ -57,42 +57,98 @@ exports.createDriver = async (req, res) => {
   }
 };
 
-// GET ALL DRIVERS + STATS - Admin ke liye
+// GET ALL DRIVERS + STATS + ASSIGNMENT DETAILS (Without delivery counts)
 exports.getDrivers = async (req, res) => {
   try {
     const tenantId = req.derivedTenantId;
 
-    const [drivers, stats] = await Promise.all([
-      prisma.driver.findMany({
-        where: { tenantId },
-        include: {
-          zone: { select: { name: true } },
-        },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.driver.aggregate({
-        where: { tenantId },
-        _count: { id: true },
-        _avg: { rating: true },
-        _sum: { todayDeliveries: true, totalDeliveries: true },
-      }),
-    ]);
+    // 1. Get basic driver list
+    const drivers = await prisma.driver.findMany({
+      where: { tenantId },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        vehicleNumber: true,
+        vehicleType: true,
+        status: true,
+        rating: true,
+        totalRatings: true,
+        createdAt: true,
+        updatedAt: true,
+        userId: true,
+        zoneId: true,
+        tenantId: true,
+        zone: { select: { name: true } },
+        // ✅ Removed: todayDeliveries, totalDeliveries
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // 2. Get team stats without delivery counts
+    const teamStats = await prisma.driver.aggregate({
+      where: { tenantId },
+      _count: { id: true },
+      _avg: { rating: true },
+    });
+
+    // 3. Get assignment stats for each driver
+    const driversWithAssignmentStats = await Promise.all(
+      drivers.map(async (driver) => {
+        const orderStats = await prisma.order.groupBy({
+          by: ["status"],
+          where: {
+            driverId: driver.id,
+            tenantId,
+            status: {
+              notIn: ["completed", "cancelled"],
+            },
+          },
+          _count: { id: true },
+        });
+
+        const statusCounts = {};
+        orderStats.forEach((stat) => {
+          statusCounts[stat.status] = stat._count.id;
+        });
+
+        const busyOrders =
+          (statusCounts["in_progress"] || 0) +
+          (statusCounts["out_for_delivery"] || 0);
+
+        return {
+          ...driver,
+          assignmentStats: {
+            ...statusCounts,
+            totalAssigned: orderStats.reduce(
+              (sum, stat) => sum + stat._count.id,
+              0
+            ),
+            isFree: busyOrders === 0,
+          },
+        };
+      })
+    );
 
     const activeDrivers = drivers.filter((d) => d.status === "active").length;
 
     res.json({
-      drivers,
+      drivers: driversWithAssignmentStats,
       stats: {
-        totalDrivers: stats._count.id,
+        totalDrivers: teamStats._count.id,
         activeDrivers,
-        avgRating: stats._avg.rating
-          ? Number(stats._avg.rating.toFixed(2))
+        avgRating: teamStats._avg.rating
+          ? Number(teamStats._avg.rating.toFixed(2))
           : null,
-        deliveriesToday: stats._sum.todayDeliveries || 0,
-        totalDeliveriesEver: stats._sum.totalDeliveries || 0,
+        // ✅ Removed: deliveriesToday, totalDeliveriesEver
+        totalOrdersAssigned: driversWithAssignmentStats.reduce(
+          (sum, driver) => sum + driver.assignmentStats.totalAssigned,
+          0
+        ),
       },
     });
   } catch (err) {
+    console.error("Get drivers error:", err);
     res.status(500).json({ error: err.message });
   }
 };
