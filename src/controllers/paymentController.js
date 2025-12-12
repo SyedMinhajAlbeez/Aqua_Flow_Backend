@@ -710,7 +710,7 @@ exports.getAllPayments = async (req, res) => {
   try {
     const tenantId = req.derivedTenantId;
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
     const {
@@ -913,28 +913,34 @@ exports.getDriverCollectionHistory = async (req, res) => {
   try {
     const driverId = req.user.id;
     const tenantId = req.derivedTenantId;
-
+    
     // Pagination parameters
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
-
+    
     // Filter parameters
-    const { startDate, endDate, customerId, paymentMethod, status, search } =
-      req.query;
+    const { 
+      startDate, 
+      endDate, 
+      customerId, 
+      paymentMethod, 
+      status,
+      search 
+    } = req.query;
 
     // Base where clause
     const where = {
       tenantId,
       collectedByDriverId: driverId,
-      paidAmount: { gt: 0 }, // Only collected payments
+      paidAmount: { gt: 0 } // Only collected payments
     };
 
     // Date filter
     if (startDate && endDate) {
       where.paymentDate = {
         gte: new Date(startDate),
-        lte: new Date(endDate),
+        lte: new Date(endDate)
       };
     } else if (startDate) {
       where.paymentDate = { gte: new Date(startDate) };
@@ -946,19 +952,19 @@ exports.getDriverCollectionHistory = async (req, res) => {
     if (customerId) where.customerId = customerId;
     if (paymentMethod) where.paymentMethod = paymentMethod;
     if (status) where.status = status;
-
+    
     // Search by customer name/phone or payment number
     if (search) {
       where.OR = [
-        { paymentNumber: { contains: search, mode: "insensitive" } },
+        { paymentNumber: { contains: search, mode: 'insensitive' } },
         {
           customer: {
             OR: [
-              { name: { contains: search, mode: "insensitive" } },
-              { phone: { contains: search, mode: "insensitive" } },
-            ],
-          },
-        },
+              { name: { contains: search, mode: 'insensitive' } },
+              { phone: { contains: search, mode: 'insensitive' } }
+            ]
+          }
+        }
       ];
     }
 
@@ -977,38 +983,38 @@ exports.getDriverCollectionHistory = async (req, res) => {
               address: true,
               zone: {
                 select: {
-                  name: true,
-                },
-              },
-            },
+                  name: true
+                }
+              }
+            }
           },
           order: {
             select: {
               orderNumberDisplay: true,
-              deliveryDate: true,
-            },
+              deliveryDate: true
+            }
           },
           subscription: {
             select: {
               recurrence: true,
               product: {
                 select: {
-                  name: true,
-                },
-              },
-            },
+                  name: true
+                }
+              }
+            }
           },
           paymentItems: {
             select: {
               productName: true,
               quantity: true,
-              totalAmount: true,
-            },
-          },
+              totalAmount: true
+            }
+          }
         },
-        orderBy: { paymentDate: "desc" },
+        orderBy: { paymentDate: 'desc' }
       }),
-      prisma.payment.count({ where }),
+      prisma.payment.count({ where })
     ]);
 
     // Calculate summary stats
@@ -1016,39 +1022,39 @@ exports.getDriverCollectionHistory = async (req, res) => {
       where,
       _sum: {
         paidAmount: true,
-        amount: true,
+        amount: true
       },
-      _count: true,
+      _count: true
     });
 
     // Get daily collection summary for the last 7 days
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
+    
     const dailySummary = await prisma.payment.groupBy({
-      by: ["paymentDate"],
+      by: ['paymentDate'],
       where: {
         ...where,
-        paymentDate: { gte: sevenDaysAgo },
+        paymentDate: { gte: sevenDaysAgo }
       },
       _sum: {
-        paidAmount: true,
+        paidAmount: true
       },
       _count: true,
       orderBy: {
-        paymentDate: "desc",
-      },
+        paymentDate: 'desc'
+      }
     });
 
     // Format daily summary
-    const formattedDailySummary = dailySummary.map((day) => ({
+    const formattedDailySummary = dailySummary.map(day => ({
       date: day.paymentDate,
       totalCollected: day._sum.paidAmount,
-      collectionCount: day._count,
+      collectionCount: day._count
     }));
 
     // Format response
-    const formattedPayments = payments.map((payment) => ({
+    const formattedPayments = payments.map(payment => ({
       id: payment.id,
       paymentNumber: payment.paymentNumber,
       paymentDate: payment.paymentDate,
@@ -1061,25 +1067,21 @@ exports.getDriverCollectionHistory = async (req, res) => {
         name: payment.customer.name,
         phone: payment.customer.phone,
         address: payment.customer.address,
-        zone: payment.customer.zone?.name,
+        zone: payment.customer.zone?.name
       },
-      items: payment.paymentItems.map((item) => ({
+      items: payment.paymentItems.map(item => ({
         product: item.productName,
         quantity: item.quantity,
-        amount: item.totalAmount,
+        amount: item.totalAmount
       })),
-      orderInfo: payment.order
-        ? {
-            orderNumber: payment.order.orderNumberDisplay,
-            deliveryDate: payment.order.deliveryDate,
-          }
-        : null,
-      subscriptionInfo: payment.subscription
-        ? {
-            recurrence: payment.subscription.recurrence,
-            productName: payment.subscription.product?.name,
-          }
-        : null,
+      orderInfo: payment.order ? {
+        orderNumber: payment.order.orderNumberDisplay,
+        deliveryDate: payment.order.deliveryDate
+      } : null,
+      subscriptionInfo: payment.subscription ? {
+        recurrence: payment.subscription.recurrence,
+        productName: payment.subscription.product?.name
+      } : null
     }));
 
     res.json({
@@ -1089,13 +1091,12 @@ exports.getDriverCollectionHistory = async (req, res) => {
         currentPage: page,
         totalPages: Math.ceil(total / limit),
         totalItems: total,
-        itemsPerPage: limit,
+        itemsPerPage: limit
       },
       summary: {
         totalCollections: stats._count,
         totalAmountCollected: stats._sum.paidAmount || 0,
-        averageCollection:
-          stats._count > 0 ? stats._sum.paidAmount / stats._count : 0,
+        averageCollection: stats._count > 0 ? (stats._sum.paidAmount / stats._count) : 0
       },
       dailySummary: formattedDailySummary,
       filters: {
@@ -1104,15 +1105,16 @@ exports.getDriverCollectionHistory = async (req, res) => {
         customerId,
         paymentMethod,
         status,
-        search,
-      },
+        search
+      }
     });
+
   } catch (err) {
     console.error("❌ Get Driver Collection History Error:", err);
     res.status(500).json({
       success: false,
       error: "Failed to fetch collection history",
-      details: err.message,
+      details: err.message
     });
   }
 };

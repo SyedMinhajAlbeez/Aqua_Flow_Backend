@@ -978,7 +978,7 @@ exports.getCustomerOrders = async (req, res) => {
     const tenantId = req.derivedTenantId;
     const customerId = req.user.id;
     const page = parseInt(req.query.page) || 1;
-    const limit = 10;
+    const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
     // SIRF current customer ke orders

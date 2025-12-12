@@ -6,18 +6,19 @@ const {
   createOrder,
   getOrders,
   updateOrderStatus,
-  markAsDelivered,
   getOrderById,
   cancelOrder,
+  getOrderStats,
 } = require("../controllers/orderController");
 
 // Admin Order routes
 
 router.post("/create", createOrder);
 router.get("/all", getOrders);
+
+router.get("/getOrdersStats", getOrderStats);
 router.patch("/status/:id", updateOrderStatus);
 router.get("/:id", getOrderById);
 router.patch("/cancel/:id", cancelOrder);
-router.patch("/delivered/:id", markAsDelivered); // Driver: Paani diya
 
 module.exports = router;

@@ -11,12 +11,14 @@ const {
   getTodayAllOrders,
 } = require("../../controllers/driverappcontrollers/driverorderController");
 
-router.get("/my-orders", getMyAssignedOrders);
+// not Call Api App
 router.get("/today-orders", getTodayAllOrders); // ✅ NEW: Today all orders
+// Use Api App
+router.get("/my-orders", getMyAssignedOrders);
 router.get("/today-recurring", getTodayRecurringOrders); // ✅ Recurring view with empties info
+router.get("/my-completed", getMyCompletedOrders); // ✅ NEW: History of completed orders
 router.patch("/order-out-for-delivery/:id", markOutForDelivery);
 router.patch("/order-delivered/:id", markAsDelivered);
 router.patch("/complete-order/:id", completeOrderWithEmpties); // ✅ After delivered: Collect empties & complete
-router.get("/my-completed", getMyCompletedOrders); // ✅ NEW: History of completed orders
 
 module.exports = router;

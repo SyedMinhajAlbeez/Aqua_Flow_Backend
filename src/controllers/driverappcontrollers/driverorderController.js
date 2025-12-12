@@ -2,7 +2,7 @@ const prisma = require("../../prisma/client");
 const { sendOTP, verifyOTP } = require("../../utils/otpService");
 const jwt = require("jsonwebtoken");
 
-// ✅ NEW: DRIVER KE COMPLETED ORDERS HISTORY (Sirf completed dikhao)
+// ✅ NEW: DRIVER KE COMPLETED ORDERS HISTORY WITH PAGINATION
 exports.getMyCompletedOrders = async (req, res) => {
   try {
     if (req.user.role !== "driver") {
@@ -11,6 +11,20 @@ exports.getMyCompletedOrders = async (req, res) => {
 
     const driverId = req.user.id;
     const tenantId = req.derivedTenantId;
+
+    // ✅ PAGINATION PARAMETERS
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 15;
+    const skip = (page - 1) * limit;
+
+    // ✅ TOTAL COUNT FOR PAGINATION
+    const totalOrders = await prisma.order.count({
+      where: {
+        driverId,
+        tenantId,
+        status: "completed",
+      },
+    });
 
     const orders = await prisma.order.findMany({
       where: {
@@ -43,6 +57,8 @@ exports.getMyCompletedOrders = async (req, res) => {
         subscription: true,
       },
       orderBy: { deliveryDate: "desc" },
+      skip, // ✅ PAGINATION SKIP
+      take: limit, // ✅ PAGINATION LIMIT
     });
 
     const ordersWithDetails = orders.map((order) => {
@@ -67,6 +83,14 @@ exports.getMyCompletedOrders = async (req, res) => {
     res.json({
       success: true,
       message: "Your completed orders history",
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalOrders / limit),
+        totalItems: totalOrders,
+        itemsPerPage: limit,
+        hasNextPage: page < Math.ceil(totalOrders / limit),
+        hasPreviousPage: page > 1,
+      },
       count: ordersWithDetails.length,
       orders: ordersWithDetails,
     });
@@ -76,7 +100,7 @@ exports.getMyCompletedOrders = async (req, res) => {
   }
 };
 
-// GET TODAY'S RECURRING ORDERS FOR DRIVER
+// GET TODAY'S RECURRING ORDERS FOR DRIVER WITH PAGINATION
 exports.getTodayRecurringOrders = async (req, res) => {
   try {
     if (req.user.role !== "driver") {
@@ -91,6 +115,11 @@ exports.getTodayRecurringOrders = async (req, res) => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
+    // ✅ PAGINATION PARAMETERS
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const driver = await prisma.driver.findUnique({
       where: { id: driverId },
       select: { zoneId: true },
@@ -99,6 +128,23 @@ exports.getTodayRecurringOrders = async (req, res) => {
     if (!driver) {
       return res.status(404).json({ error: "Driver not found" });
     }
+
+    // ✅ TOTAL COUNT FOR PAGINATION
+    const totalOrders = await prisma.order.count({
+      where: {
+        tenantId,
+        zoneId: driver.zoneId,
+        deliveryDate: {
+          gte: today,
+          lt: tomorrow,
+        },
+        status: {
+          in: ["pending", "in_progress", "delivered"],
+        },
+        isRecurring: true,
+        subscriptionId: { not: null },
+      },
+    });
 
     const recurringOrders = await prisma.order.findMany({
       where: {
@@ -152,6 +198,8 @@ exports.getTodayRecurringOrders = async (req, res) => {
         { subscription: { preferredTime: "asc" } },
         { deliveryDate: "asc" },
       ],
+      skip, // ✅ PAGINATION SKIP
+      take: limit, // ✅ PAGINATION LIMIT
     });
 
     // ✅ CORRECT LOGIC NOW:
@@ -223,6 +271,14 @@ exports.getTodayRecurringOrders = async (req, res) => {
       success: true,
       message: `You have ${formatted.length} recurring tasks today`,
       today: today.toISOString().split("T")[0],
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalOrders / limit),
+        totalItems: totalOrders,
+        itemsPerPage: limit,
+        hasNextPage: page < Math.ceil(totalOrders / limit),
+        hasPreviousPage: page > 1,
+      },
       orders: formatted,
       stats: {
         total: formatted.length,
@@ -731,7 +787,7 @@ exports.getTodayAllOrders = async (req, res) => {
   }
 };
 
-// ✅ DRIVER KO SIRF USKE ASSIGNED ORDERS DIKHAO
+// ✅ DRIVER KO SIRF USKE ASSIGNED ORDERS DIKHAO WITH PAGINATION
 exports.getMyAssignedOrders = async (req, res) => {
   try {
     if (req.user.role !== "driver") {
@@ -742,6 +798,22 @@ exports.getMyAssignedOrders = async (req, res) => {
 
     const driverId = req.user.id;
     const tenantId = req.derivedTenantId;
+
+    // ✅ PAGINATION PARAMETERS
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    // ✅ TOTAL COUNT FOR PAGINATION
+    const totalOrders = await prisma.order.count({
+      where: {
+        driverId,
+        tenantId,
+        status: {
+          in: ["pending", "in_progress", "out_for_delivery", "delivered"],
+        },
+      },
+    });
 
     const orders = await prisma.order.findMany({
       where: {
@@ -780,6 +852,8 @@ exports.getMyAssignedOrders = async (req, res) => {
         { deliveryDate: "asc" },
         { createdAt: "desc" },
       ],
+      skip, // ✅ PAGINATION SKIP
+      take: limit, // ✅ PAGINATION LIMIT
     });
 
     const today = new Date().toDateString();
@@ -827,6 +901,14 @@ exports.getMyAssignedOrders = async (req, res) => {
       message:
         "Your assigned orders (up to delivered - complete empties separately)",
       stats,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalOrders / limit),
+        totalItems: totalOrders,
+        itemsPerPage: limit,
+        hasNextPage: page < Math.ceil(totalOrders / limit),
+        hasPreviousPage: page > 1,
+      },
       orders: ordersWithEmpties,
     });
   } catch (err) {

@@ -557,7 +557,7 @@ exports.createOrder = async (req, res) => {
 exports.getOrders = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = 15;
+    const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
     const tenantId = req.derivedTenantId;
 
@@ -686,55 +686,6 @@ exports.getOrders = async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch orders",
-    });
-  }
-};
-
-// ==================== MARK AS DELIVERED ====================
-exports.markAsDelivered = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const tenantId = req.derivedTenantId;
-
-    const order = await prisma.order.update({
-      where: { id, tenantId },
-      data: { status: "delivered" },
-      include: {
-        driver: true,
-        customer: {
-          select: { id: true, name: true, phone: true },
-        },
-      },
-    });
-
-    // Increment driver stats
-    if (order.driverId) {
-      await prisma.driver.update({
-        where: { id: order.driverId },
-        data: {
-          totalDeliveries: { increment: 1 },
-          todayDeliveries: { increment: 1 },
-        },
-      });
-    }
-
-    // Send notification to customer
-    await sendOrderStatusUpdate(
-      order.customer.id,
-      order.orderNumberDisplay,
-      "delivered",
-      order.driver?.name
-    );
-
-    res.json({
-      success: true,
-      message: "Order marked as delivered",
-      order,
-    });
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      error: err.message,
     });
   }
 };
@@ -1013,6 +964,50 @@ exports.cancelOrder = async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to cancel order",
+    });
+  }
+};
+
+// ====================  ORDERS STATS ====================
+exports.getOrderStats = async (req, res) => {
+  try {
+    const tenantId = req.derivedTenantId;
+
+    // Total orders
+    const totalOrders = await prisma.order.count();
+
+    // Last 7 days
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+
+    const lastWeekOrders = await prisma.order.count({
+      where: {
+        createdAt: {
+          gte: oneWeekAgo,
+        },
+      },
+    });
+
+    // Calculate percentage
+    const newOrderPercentage =
+      totalOrders > 0
+        ? Number(((lastWeekOrders / totalOrders) * 100).toFixed(2))
+        : 0;
+
+    return res.status(200).json({
+      success: true,
+      stats: {
+        totalOrders,
+        lastWeekOrders,
+        newOrderPercentage,
+      },
+    });
+  } catch (error) {
+    console.error("Order Stats Error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to get order statistics",
+      details: error.message,
     });
   }
 };
