@@ -144,8 +144,8 @@ exports.createOrder = async (req, res) => {
       if (!driver) return res.status(404).json({ error: "Driver not found" });
       if (driver.status !== "active")
         return res.status(400).json({ error: "Driver is not active" });
-      if (driver.zoneId !== customer.zoneId)
-        return res.status(400).json({ error: "Driver must be from same zone" });
+      // if (driver.zoneId !== customer.zoneId)
+      //   return res.status(400).json({ error: "Driver must be from same zone" });
 
       initialStatus = "in_progress";
     }
@@ -973,33 +973,82 @@ exports.getOrderStats = async (req, res) => {
   try {
     const tenantId = req.derivedTenantId;
 
-    // Total orders
-    const totalOrders = await prisma.order.count();
-
-    // Last 7 days
+    // Calculate date for last 7 days
     const oneWeekAgo = new Date();
     oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
 
-    const lastWeekOrders = await prisma.order.count({
-      where: {
-        createdAt: {
-          gte: oneWeekAgo,
-        },
-      },
-    });
+    // ========== PARALLEL QUERIES (FAST) ==========
+    const [statusStats, recurringStats, totalOrders, lastWeekOrders] =
+      await Promise.all([
+        // Group by status
+        prisma.order.groupBy({
+          by: ["status"],
+          where: { tenantId },
+          _count: { status: true },
+        }),
 
-    // Calculate percentage
+        // Group by recurring
+        prisma.order.groupBy({
+          by: ["isRecurring"],
+          where: { tenantId },
+          _count: { isRecurring: true },
+        }),
+
+        // Total orders
+        prisma.order.count({
+          where: { tenantId },
+        }),
+
+        // Orders created in the last week
+        prisma.order.count({
+          where: {
+            tenantId,
+            createdAt: {
+              gte: oneWeekAgo,
+            },
+          },
+        }),
+      ]);
+
+    // Convert results to clean objects
+    const statusCount = statusStats.reduce((acc, s) => {
+      acc[s.status] = s._count.status;
+      return acc;
+    }, {});
+
+    const recurringCount = recurringStats.reduce(
+      (acc, r) => {
+        acc[r.isRecurring ? "recurring" : "oneTime"] = r._count.isRecurring;
+        return acc;
+      },
+      { recurring: 0, oneTime: 0 }
+    );
+
+    // Percentage of new orders
     const newOrderPercentage =
       totalOrders > 0
         ? Number(((lastWeekOrders / totalOrders) * 100).toFixed(2))
         : 0;
 
+    // Final response
     return res.status(200).json({
       success: true,
       stats: {
+        // Basic stats
         totalOrders,
         lastWeekOrders,
         newOrderPercentage,
+
+        // Status
+        pending: statusCount.pending || 0,
+        in_progress: statusCount.in_progress || 0,
+        delivered: statusCount.delivered || 0,
+        completed: statusCount.completed || 0,
+        cancelled: statusCount.cancelled || 0,
+        failed: statusCount.failed || 0,
+
+        // Recurring stats
+        ...recurringCount,
       },
     });
   } catch (error) {
@@ -1011,3 +1060,4 @@ exports.getOrderStats = async (req, res) => {
     });
   }
 };
+

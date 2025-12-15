@@ -9,7 +9,7 @@ exports.getInventory = async (req, res) => {
   try {
     const tenantId = req.derivedTenantId;
 
-    // 1. Product-Wise Inventory (Har product ka alag stock)
+    // 1. Product-Wise Inventory
     const productInventories = await prisma.productInventory.findMany({
       where: { tenantId },
       include: {
@@ -27,40 +27,22 @@ exports.getInventory = async (req, res) => {
       orderBy: { product: { name: "asc" } },
     });
 
-    // 2. Global Reusable Bottle Pool (Sirf reusable products ke liye aggregate)
+    // 2. Global Reusable Bottle Pool
     const bottleInv = await prisma.bottleInventory.findUnique({
       where: { tenantId },
     });
 
-    // FIXED: Cross-check reusable sum vs global pool (debug mismatch)
-    const reusableProductSum = productInventories
-      .filter((inv) => inv.product.isReusable)
-      .reduce((sum, inv) => sum + inv.currentStock, 0);
-    const reusableWithCustomersSum = productInventories
-      .filter((inv) => inv.product.isReusable)
-      .reduce((sum, inv) => sum + (inv.totalAdded - inv.currentStock), 0); // Sold as proxy for with customers
-    if (bottleInv && bottleInv.inStock !== reusableProductSum) {
-      console.warn(
-        `Global Pool Mismatch: DB inStock=${bottleInv.inStock}, Reusable Sum=${reusableProductSum}. Sync needed!`
-      );
-    }
-    if (bottleInv && bottleInv.withCustomers !== reusableWithCustomersSum) {
-      console.warn(
-        `Global WithCustomers Mismatch: DB=${bottleInv.withCustomers}, Calculated=${reusableWithCustomersSum}`
-      );
-    }
-
-    // 3. Total Security Deposit from Customers
+    // 3. Total Security Deposit
     const totalDeposit = await prisma.customer.aggregate({
       where: { tenantId },
       _sum: { securityDeposit: true },
     });
 
-    // 4. Recent Transactions (Last 10 Order Items - Product-Wise)
+    // 4. Recent Transactions
     const recentTransactions = await prisma.orderItem.findMany({
       where: {
         order: { tenantId },
-        product: { isReusable: true }, // Optional: Sirf reusable
+        product: { isReusable: true },
       },
       include: {
         order: {
@@ -71,25 +53,107 @@ exports.getInventory = async (req, res) => {
         },
         product: { select: { name: true, size: true } },
       },
-      orderBy: { order: { createdAt: "desc" } }, // ← FIXED: Nested orderBy on Order.createdAt
+      orderBy: { order: { createdAt: "desc" } },
       take: 10,
     });
 
-    // 5. Pending Empties (Top 10 Customers with empties > 0)
+    // 🔴 UPDATED: Get customers with next delivery info
     const pendingCustomers = await prisma.customer.findMany({
-      where: { tenantId, empties: { gt: 0 } },
+      where: {
+        tenantId,
+        empties: { gt: 0 },
+        // Only customers with active orders/deliveries
+        orders: {
+          some: {
+            status: { in: ["pending", "in_progress", "delivered"] },
+          },
+        },
+      },
       select: {
         name: true,
         empties: true,
         bottlesGiven: true,
         securityDeposit: true,
         lastOrderDate: true,
+        id: true, // Needed for order query
       },
       orderBy: { empties: "desc" },
       take: 10,
     });
 
-    // Calculate Aggregates
+    // 🔴 NEW: Calculate expected empties for each customer's next delivery
+    const formattedEmpties = await Promise.all(
+      pendingCustomers.map(async (c) => {
+        // Find next order for this customer
+        const nextOrder = await prisma.order.findFirst({
+          where: {
+            customerId: c.id,
+            tenantId,
+            status: { in: ["pending", "in_progress", "delivered"] },
+            deliveryDate: { gte: new Date() }, // Upcoming or today
+          },
+          include: {
+            items: {
+              include: {
+                product: {
+                  select: {
+                    isReusable: true,
+                    requiresEmptyReturn: true,
+                  },
+                },
+              },
+            },
+          },
+          orderBy: { deliveryDate: "asc" },
+        });
+
+        let expectedEmpties = 0;
+        let orderType = "No upcoming order";
+
+        if (nextOrder) {
+          // Check if it's a refill order (withBottles: false)
+          if (nextOrder.withBottles === false) {
+            const reusableItems = nextOrder.items.filter(
+              (item) =>
+                item.product.isReusable && item.product.requiresEmptyReturn
+            );
+            expectedEmpties = reusableItems.reduce(
+              (sum, item) => sum + item.quantity,
+              0
+            );
+            orderType = "Refill Order";
+          } else {
+            orderType = "First-time Delivery";
+            // First-time delivery - no empties expected
+            expectedEmpties = 0;
+          }
+        }
+
+        return {
+          customerName: c.name,
+          totalEmptiesWithCustomer: c.empties, // Total empties customer has
+          pendingReturn: expectedEmpties, // Expected empties in next delivery
+          lastReturn: c.lastOrderDate
+            ? new Date(c.lastOrderDate).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })
+            : "Never",
+          securityDeposit: c.securityDeposit,
+          bottlesGiven: c.bottlesGiven,
+          nextOrderType: orderType,
+          note:
+            expectedEmpties > 0
+              ? `Next delivery: Collect ${expectedEmpties} empties`
+              : orderType === "First-time Delivery"
+              ? "First-time delivery - delivering bottles"
+              : "No empties expected",
+        };
+      })
+    );
+
+    // 5. Calculate Aggregates
     const totalBottles = productInventories.reduce(
       (sum, inv) => sum + inv.totalAdded,
       0
@@ -101,10 +165,10 @@ exports.getInventory = async (req, res) => {
     const withCustomersTotal = totalBottles - inStockTotal;
     const lowStockProducts = productInventories.filter(
       (inv) => inv.currentStock < 10
-    ); // Threshold 10
+    );
     const isLowStock = lowStockProducts.length > 0;
 
-    // Bottle Stock Levels (Product-Wise Progress Bars)
+    // 6. Bottle Stock Levels
     const bottleStockLevels = productInventories.map((inv) => ({
       size: inv.product.size,
       available:
@@ -116,7 +180,7 @@ exports.getInventory = async (req, res) => {
       reusable: inv.product.isReusable,
     }));
 
-    // Format Recent Transactions
+    // 7. Format Recent Transactions
     const formattedTransactions = recentTransactions.map((item) => ({
       customerName: item.order.customer.name,
       driverName: item.order.driver?.name || "Unassigned",
@@ -129,21 +193,6 @@ exports.getInventory = async (req, res) => {
       product: `${item.product.name} (${item.product.size})`,
       status:
         item.order.status === "completed" ? "Completed" : item.order.status,
-    }));
-
-    // Format Empties Tracking
-    const formattedEmpties = pendingCustomers.map((c) => ({
-      customerName: c.name,
-      pendingReturn: c.empties,
-      lastReturn: c.lastOrderDate
-        ? new Date(c.lastOrderDate).toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-          })
-        : "Never",
-      securityDeposit: c.securityDeposit,
-      bottlesGiven: c.bottlesGiven,
     }));
 
     res.json({
@@ -163,10 +212,10 @@ exports.getInventory = async (req, res) => {
             .join(", ")}`
         : null,
 
-      // Product-Wise Levels (for bars/table)
+      // Product-Wise Levels
       bottleStockLevels,
 
-      // Product Inventories (Full List for Table)
+      // Product Inventories
       productInventories: productInventories.map((inv) => ({
         ...inv,
         currentStock: inv.currentStock,
@@ -177,10 +226,19 @@ exports.getInventory = async (req, res) => {
       // Recent Transactions
       recentTransactions: formattedTransactions,
 
-      // Pending Empties
-      emptiesTracking: formattedEmpties,
+      // 🔴 UPDATED: Pending Empties (Expected for next delivery)
+      emptiesTracking: formattedEmpties.filter((e) => e.pendingReturn > 0),
 
-      // Global Reusable Pool (Optional, for reusable aggregate)
+      // Optional: Customers with empties but no upcoming delivery
+      customersWithEmpties: formattedEmpties
+        .filter((e) => e.totalEmptiesWithCustomer > 0 && e.pendingReturn === 0)
+        .map((c) => ({
+          customerName: c.customerName,
+          totalEmpties: c.totalEmptiesWithCustomer,
+          note: "Customer has empties but no upcoming delivery scheduled",
+        })),
+
+      // Global Reusable Pool
       globalReusablePool: bottleInv || {
         totalPurchased: 0,
         inStock: 0,
