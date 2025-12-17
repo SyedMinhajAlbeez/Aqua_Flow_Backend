@@ -8,6 +8,12 @@ router.use("/auth", require("./authRoutes"));
 router.use("/companies", protect, require("./companyRoutes"));
 router.use("/users", protect, tenantMiddleware, require("./userRoutes"));
 router.use(
+  "/admin",
+  protect,
+  tenantMiddleware,
+  require("./admindashboardRoutes")
+);
+router.use(
   "/app/driver/payment",
   protect,
   tenantMiddleware,
