@@ -553,6 +553,143 @@ exports.createOrder = async (req, res) => {
   }
 };
 
+// // ==================== GET ALL ORDERS ====================
+// exports.getOrders = async (req, res) => {
+//   try {
+//     const page = parseInt(req.query.page) || 1;
+//     const limit = parseInt(req.query.limit) || 10;
+//     const skip = (page - 1) * limit;
+//     const tenantId = req.derivedTenantId;
+
+//     // Optional filters
+//     const status = req.query.status;
+//     const isRecurring = req.query.isRecurring;
+//     const date = req.query.date;
+
+//     let where = { tenantId };
+
+//     // Apply filters
+//     if (status) where.status = status;
+//     if (isRecurring === "true") where.isRecurring = true;
+//     if (isRecurring === "false") where.isRecurring = false;
+//     if (date) {
+//       const startDate = new Date(date);
+//       startDate.setHours(0, 0, 0, 0);
+//       const endDate = new Date(date);
+//       endDate.setDate(endDate.getDate() + 1);
+//       where.deliveryDate = {
+//         gte: startDate,
+//         lt: endDate,
+//       };
+//     }
+
+//     const [orders, total, stats] = await Promise.all([
+//       prisma.order.findMany({
+//         where,
+//         skip,
+//         take: limit,
+//         orderBy: { createdAt: "desc" },
+//         include: {
+//           customer: {
+//             select: {
+//               id: true,
+//               name: true,
+//               phone: true,
+//             },
+//           },
+//           driver: {
+//             select: {
+//               id: true,
+//               name: true,
+//               vehicleNumber: true,
+//               vehicleType: true,
+//             },
+//           },
+//           zone: { select: { id: true, name: true } },
+//           items: {
+//             include: {
+//               product: {
+//                 select: {
+//                   id: true,
+//                   name: true,
+//                   size: true,
+//                   isReusable: true,
+//                 },
+//               },
+//             },
+//           },
+//           subscription: {
+//             select: {
+//               id: true,
+//               recurrence: true,
+//               status: true,
+//             },
+//           },
+//         },
+//       }),
+//       prisma.order.count({ where }),
+//       prisma.order.groupBy({
+//         by: ["status"],
+//         where: { tenantId },
+//         _count: { status: true },
+//       }),
+//     ]);
+
+//     // Get recurring stats
+//     const recurringStats = await prisma.order.groupBy({
+//       by: ["isRecurring"],
+//       where: { tenantId },
+//       _count: { isRecurring: true },
+//     });
+
+//     const statusCount = stats.reduce((acc, curr) => {
+//       acc[curr.status] = curr._count.status;
+//       return acc;
+//     }, {});
+
+//     const recurringCount = recurringStats.reduce(
+//       (acc, curr) => {
+//         acc[curr.isRecurring ? "recurring" : "oneTime"] =
+//           curr._count.isRecurring;
+//         return acc;
+//       },
+//       { recurring: 0, oneTime: 0 }
+//     );
+
+//     res.json({
+//       success: true,
+//       orders,
+//       stats: {
+//         totalOrders: total,
+//         pending: statusCount.pending || 0,
+//         in_progress: statusCount.in_progress || 0,
+//         delivered: statusCount.delivered || 0,
+//         completed: statusCount.completed || 0,
+//         cancelled: statusCount.cancelled || 0,
+//         failed: statusCount.failed || 0,
+//         ...recurringCount,
+//       },
+//       pagination: {
+//         page,
+//         limit,
+//         total,
+//         totalPages: Math.ceil(total / limit),
+//       },
+//       filters: {
+//         status,
+//         isRecurring,
+//         date,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("Get Orders Error:", err);
+//     res.status(500).json({
+//       success: false,
+//       error: "Failed to fetch orders",
+//     });
+//   }
+// };
+
 // ==================== GET ALL ORDERS ====================
 exports.getOrders = async (req, res) => {
   try {
@@ -561,34 +698,172 @@ exports.getOrders = async (req, res) => {
     const skip = (page - 1) * limit;
     const tenantId = req.derivedTenantId;
 
-    // Optional filters
-    const status = req.query.status;
-    const isRecurring = req.query.isRecurring;
-    const date = req.query.date;
+    // ─── All possible filters ─────────────────────────────────────────────
+    const {
+      status,
+      isRecurring,
+      date,                     // backward compatibility with old single date
+      deliveryDate,             // exact date
+      deliveryDateFrom,
+      deliveryDateTo,
+      zoneId,
+      customerId,
+      driverId,
+      search,                   // search by order number / customer name/phone
+      quickFilter,              // today, tomorrow, thisWeek, pending, etc.
+      sortBy = "createdAt",     // default to createdAt for consistency with original
+      sortOrder = "desc",       // default descending (newest first)
+      paymentStatus,            // ADDED: payment status filter
+    } = req.query;
 
-    let where = { tenantId };
+    // Build dynamic where clause
+    const where = { tenantId };
 
-    // Apply filters
+    // Status filter
     if (status) where.status = status;
+
+    // Payment Status filter - ADDED
+    if (paymentStatus) where.paymentStatus = paymentStatus;
+
+    // Recurring filter (keep same logic as before)
     if (isRecurring === "true") where.isRecurring = true;
     if (isRecurring === "false") where.isRecurring = false;
+
+    // Date filters - support multiple formats for compatibility
+    let deliveryDateFilter = null;
+
     if (date) {
+      // Old behavior - single date
       const startDate = new Date(date);
       startDate.setHours(0, 0, 0, 0);
       const endDate = new Date(date);
-      endDate.setDate(endDate.getDate() + 1);
-      where.deliveryDate = {
-        gte: startDate,
-        lt: endDate,
-      };
+      endDate.setHours(23, 59, 59, 999);
+      deliveryDateFilter = { gte: startDate, lte: endDate };
+    } else if (deliveryDate) {
+      // Exact date
+      const startDate = new Date(deliveryDate);
+      startDate.setHours(0, 0, 0, 0);
+      const endDate = new Date(deliveryDate);
+      endDate.setHours(23, 59, 59, 999);
+      deliveryDateFilter = { gte: startDate, lte: endDate };
+    } else if (deliveryDateFrom || deliveryDateTo) {
+      deliveryDateFilter = {};
+      if (deliveryDateFrom) {
+        const from = new Date(deliveryDateFrom);
+        from.setHours(0, 0, 0, 0);
+        deliveryDateFilter.gte = from;
+      }
+      if (deliveryDateTo) {
+        const to = new Date(deliveryDateTo);
+        to.setHours(23, 59, 59, 999);
+        deliveryDateFilter.lte = to;
+      }
     }
 
+    if (deliveryDateFilter) {
+      where.deliveryDate = deliveryDateFilter;
+    }
+
+    // Additional direct filters
+    if (zoneId) where.zoneId = zoneId;
+    if (customerId) where.customerId = customerId;
+    if (driverId) where.driverId = driverId;
+
+    // Quick filters (overrides other date filters when used)
+    if (quickFilter) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      switch (quickFilter.toLowerCase()) {
+        case "today":
+          const tomorrow = new Date(today);
+          tomorrow.setDate(tomorrow.getDate() + 1);
+          where.deliveryDate = { gte: today, lt: tomorrow };
+          break;
+
+        case "tomorrow":
+          const tomorrowStart = new Date(today);
+          tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+          const dayAfter = new Date(tomorrowStart);
+          dayAfter.setDate(dayAfter.getDate() + 1);
+          where.deliveryDate = { gte: tomorrowStart, lt: dayAfter };
+          break;
+
+        case "thisweek":
+        case "this_week":
+          const endOfWeek = new Date(today);
+          endOfWeek.setDate(endOfWeek.getDate() + (6 - endOfWeek.getDay()));
+          where.deliveryDate = { gte: today, lte: endOfWeek };
+          break;
+
+        case "pending":
+          where.status = "pending";
+          break;
+
+        case "inprogress":
+        case "in_progress":
+          where.status = "in_progress";
+          break;
+
+        // Add more quick filters as needed
+        default:
+          break;
+      }
+    }
+
+    // Text search (order number, customer name or phone)
+    if (search) {
+      where.OR = [
+        {
+          orderNumberDisplay: {
+            contains: search,
+            mode: "insensitive",
+          },
+        },
+        {
+          customer: {
+            name: {
+              contains: search,
+              mode: "insensitive",
+            },
+          },
+        },
+        {
+          customer: {
+            phone: {
+              contains: search,
+            },
+          },
+        },
+      ];
+    }
+
+    // Sorting
+    const validSortFields = [
+      "createdAt",
+      "deliveryDate",
+      "totalAmount",
+      "status",
+      // You can add more when you have these fields
+    ];
+
+    let orderBy = [{ createdAt: "desc" }]; // default
+
+    if (validSortFields.includes(sortBy)) {
+      orderBy = [{ [sortBy]: sortOrder === "asc" ? "asc" : "desc" }];
+    } else if (sortBy === "zone") {
+      orderBy = [{ zone: { name: sortOrder === "asc" ? "asc" : "desc" } }];
+    } else if (sortBy === "customer") {
+      orderBy = [{ customer: { name: sortOrder === "asc" ? "asc" : "desc" } }];
+    }
+
+    // ─── Main query ───────────────────────────────────────────────────────
     const [orders, total, stats] = await Promise.all([
       prisma.order.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: "desc" },
+        orderBy,
         include: {
           customer: {
             select: {
@@ -635,11 +910,18 @@ exports.getOrders = async (req, res) => {
       }),
     ]);
 
-    // Get recurring stats
+    // Recurring stats (same as original)
     const recurringStats = await prisma.order.groupBy({
       by: ["isRecurring"],
       where: { tenantId },
       _count: { isRecurring: true },
+    });
+
+    // Payment status stats - ADDED
+    const paymentStats = await prisma.order.groupBy({
+      by: ["paymentStatus"],
+      where: { tenantId },
+      _count: { paymentStatus: true },
     });
 
     const statusCount = stats.reduce((acc, curr) => {
@@ -649,12 +931,19 @@ exports.getOrders = async (req, res) => {
 
     const recurringCount = recurringStats.reduce(
       (acc, curr) => {
-        acc[curr.isRecurring ? "recurring" : "oneTime"] =
-          curr._count.isRecurring;
+        acc[curr.isRecurring ? "recurring" : "oneTime"] = curr._count.isRecurring;
         return acc;
       },
       { recurring: 0, oneTime: 0 }
     );
+
+    // Build payment stats object - ADDED
+    const paymentStatusCount = paymentStats.reduce((acc, curr) => {
+      if (curr.paymentStatus) {
+        acc[curr.paymentStatus.toLowerCase()] = curr._count.paymentStatus;
+      }
+      return acc;
+    }, {});
 
     res.json({
       success: true,
@@ -668,6 +957,8 @@ exports.getOrders = async (req, res) => {
         cancelled: statusCount.cancelled || 0,
         failed: statusCount.failed || 0,
         ...recurringCount,
+        // Add payment stats - optional
+        ...paymentStatusCount,
       },
       pagination: {
         page,
@@ -679,6 +970,17 @@ exports.getOrders = async (req, res) => {
         status,
         isRecurring,
         date,
+        deliveryDate,
+        deliveryDateFrom,
+        deliveryDateTo,
+        zoneId,
+        customerId,
+        driverId,
+        search,
+        quickFilter,
+        sortBy,
+        sortOrder,
+        paymentStatus, // ADDED to filters response
       },
     });
   } catch (err) {
@@ -686,6 +988,7 @@ exports.getOrders = async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to fetch orders",
+      details: err.message,
     });
   }
 };

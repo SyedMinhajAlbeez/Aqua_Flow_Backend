@@ -1,6 +1,7 @@
 // src/controllers/customerOrderController.js
 const prisma = require("../../prisma/client");
 
+
 // CREATE ORDER - CUSTOMER APP (EXACTLY SAME LOGIC AS ADMIN)
 exports.createCustomerOrder = async (req, res) => {
   try {
@@ -285,7 +286,8 @@ exports.createCustomerOrder = async (req, res) => {
             totalAmount,
             acceptableDepositAmount,
             paymentMethod,
-            status: "pending", // Customer orders always start as pending
+            // status: "pending", // Customer orders always start as pending
+            status: isRecurring ? "scheduled" : "pending",
             tenantId,
             createdById: null, // Customer self-order
             isRecurring,

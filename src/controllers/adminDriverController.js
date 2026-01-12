@@ -243,16 +243,44 @@ exports.toggleDriverStatus = async (req, res) => {
   }
 };
 // RESEND OTP (Public) - Driver login ke liye, spam check ke saath
+// exports.resendDriverOTP = async (req, res) => {
+//   const { phone } = req.body;
+//   if (!phone) return res.status(400).json({ error: "Phone required" });
+
+//   const driver = await prisma.driver.findFirst({ where: { phone } });
+//   if (!driver || driver.status !== "active") {
+//     return res.status(403).json({ error: "Driver not active" });
+//   }
+
+//   // Resend OTP bhejo with isResend=true
+//   const sent = await sendOTP(phone, true); // true = isResend
+//   if (!sent) {
+//     return res
+//       .status(429)
+//       .json({ error: "Please wait 20 seconds before resending OTP" }); // ← Yeh message change
+//   }
+
+//   res.json({ message: "OTP resent to driver" });
+// };
+
 exports.resendDriverOTP = async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: "Phone required" });
+  
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: "Phone required" });
 
-  const driver = await prisma.driver.findFirst({ where: { phone } });
-  if (!driver || driver.status !== "active") {
-    return res.status(403).json({ error: "Driver not active" });
-  }
+    console.log("Searching driver for phone:", phone);
+    const driver = await prisma.driver.findFirst({ where: { phone } });
 
-  // Resend OTP bhejo with isResend=true
+    if (!driver) {
+      return res.status(404).json({ error: "Driver not found" });
+    }
+
+    if (driver.status.toLowerCase() !== "active") {
+      return res.status(403).json({ error: "Driver not active" });
+    }
+
+    // Resend OTP bhejo with isResend=true
   const sent = await sendOTP(phone, true); // true = isResend
   if (!sent) {
     return res
@@ -260,22 +288,52 @@ exports.resendDriverOTP = async (req, res) => {
       .json({ error: "Please wait 20 seconds before resending OTP" }); // ← Yeh message change
   }
 
-  res.json({ message: "OTP resent to driver" });
+    await sendOTP(phone);
+    res.json({ message: "OTP resent to driver" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 };
 
 // SEND OTP (Public) - Driver login ke liye
+// exports.sendDriverOTP = async (req, res) => {
+//   const { phone } = req.body;
+//   if (!phone) return res.status(400).json({ error: "Phone required" });
+
+//   const driver = await prisma.driver.findFirst({ where: { phone } });
+//   if (!driver || driver.status !== "active") {
+//     return res.status(403).json({ error: "Driver not active" });
+//   }
+
+//   await sendOTP(phone);
+//   res.json({ message: "OTP sent to driver" });
+// };
+
 exports.sendDriverOTP = async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: "Phone required" });
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: "Phone required" });
 
-  const driver = await prisma.driver.findFirst({ where: { phone } });
-  if (!driver || driver.status !== "active") {
-    return res.status(403).json({ error: "Driver not active" });
+    console.log("Searching driver for phone:", phone);
+    const driver = await prisma.driver.findFirst({ where: { phone } });
+
+    if (!driver) {
+      return res.status(404).json({ error: "Driver not found" });
+    }
+
+    if (driver.status.toLowerCase() !== "active") {
+      return res.status(403).json({ error: "Driver not active" });
+    }
+
+    await sendOTP(phone);
+    res.json({ message: "OTP sent to driver" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
-
-  await sendOTP(phone);
-  res.json({ message: "OTP sent to driver" });
 };
+
 // VERIFY OTP & LOGIN (Public) - Driver login ke liye
 exports.verifyDriverOTP = async (req, res) => {
   const { phone, otp } = req.body;

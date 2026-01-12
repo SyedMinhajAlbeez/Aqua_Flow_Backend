@@ -201,7 +201,7 @@ exports.getUpcomingRecurringOrders = async (req, res) => {
           gt: new Date(), // Future orders
         },
         status: {
-          in: ["scheduled", "pending"],
+          in: ["pending", "confirmed", "assigned"],
         },
       },
       include: {

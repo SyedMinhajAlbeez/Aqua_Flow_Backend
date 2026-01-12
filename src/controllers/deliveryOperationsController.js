@@ -203,3 +203,128 @@ exports.assignDriverToCustomers = async (req, res) => {
     res.status(500).json({ error: "Assignment failed" });
   }
 };
+
+
+// exports.assignDriverToCustomers = async (req, res) => {
+//   try {
+//     const tenantId = req.derivedTenantId;
+//     const { zoneId, driverId, scheduledDate, customerIds,orderId } = req.body;
+
+//     /* ─────────────── Auth & Payload Validation ─────────────── */
+//     if (!tenantId) {
+//       return res.status(401).json({ error: "Unauthorized" });
+//     }
+
+//     if (
+//       !zoneId ||
+//       !driverId ||
+//       !orderId ||
+//       !scheduledDate ||
+//       !Array.isArray(customerIds) ||
+//       customerIds.length === 0
+//     ) {
+//       return res.status(400).json({ error: "Missing required fields" });
+//     }
+
+//     /* ─────────────── Date Validation (NO PAST) ─────────────── */
+//     const scheduled = new Date(scheduledDate);
+
+//     if (isNaN(scheduled.getTime())) {
+//       return res.status(400).json({ error: "Invalid scheduled date" });
+//     }
+
+//     const today = new Date();
+//     today.setHours(0, 0, 0, 0);
+//     scheduled.setHours(0, 0, 0, 0);
+
+//     if (scheduled < today) {
+//       return res
+//         .status(400)
+//         .json({ error: "Scheduled date cannot be in the past" });
+//     }
+
+//     /* ─────────────── Zone & Driver Validation ─────────────── */
+//     const [zone, driver, order] = await Promise.all([
+//       prisma.zone.findUnique({ where: { id: zoneId } }),
+//       prisma.order.findUnique({ where: { id: orderId } }),
+//       prisma.driver.findUnique({ where: { id: driverId } }),
+//     ]);
+
+//     if (!zone || zone.tenantId !== tenantId) {
+//       return res.status(404).json({ error: "Zone not found" });
+//     }
+//     if (!order || order.tenantId !== tenantId) {
+//       return res.status(404).json({ error: "Order not found" });
+//     }
+
+//     if (!driver || driver.tenantId !== tenantId) {
+//       return res.status(404).json({ error: "Driver not found" });
+//     }
+
+//     /* ─────────────── Assignment Logic ─────────────── */
+//     const result = {
+//       assigned: 0,
+//       skipped: [],
+//     };
+
+//     for (const customerId of customerIds) {
+//       const customer = await prisma.customer.findUnique({
+//         where: { id: customerId },
+//         select: { id: true, tenantId: true, zoneId: true },
+//       });
+
+//       if (
+//         !customer ||
+//         customer.tenantId !== tenantId ||
+//         customer.zoneId !== zoneId
+//       ) {
+//         result.skipped.push({
+//           customerId,
+//           reason: "Invalid customer or zone mismatch",
+//         });
+//         continue;
+//       }
+
+//       const updatedOrders = await prisma.order.updateMany({
+//         where: {
+//           customerId,
+//           tenantId,
+//           status: "pending",
+//         },
+//         data: {
+//           driverId,
+//           status: "in_progress",
+//           scheduledDate: scheduled,
+//         },
+//       });
+
+//       if (updatedOrders.count > 0) {
+//         result.assigned += updatedOrders.count;
+//       } else {
+//         result.skipped.push({
+//           customerId,
+//           reason: "No pending orders",
+//         });
+//       }
+//     }
+
+//     /* ─────────────── Response ─────────────── */
+//     return res.json({
+//       success: true,
+//       message: `${result.assigned} orders assigned to ${
+//         driver.name || "Driver"
+//       }`,
+//       driver: driver.name || "Unknown",
+//       date: scheduled.toISOString().split("T")[0],
+//       summary: {
+//         customersRequested: customerIds.length,
+//         ordersAssigned: result.assigned,
+//         skippedCustomers: result.skipped.length,
+//       },
+//       skippedDetails: result.skipped,
+//     });
+//   } catch (error) {
+//     console.error("assignDriverToCustomers ERROR:", error);
+//     return res.status(500).json({ error: "Assignment failed" });
+//   }
+// };

@@ -4,6 +4,7 @@ const { loginUser } = require("../controllers/authController");
 const {
   sendCustomerOTP,
   verifyCustomerOTP,
+  resendCustomerOTP,
 } = require("../controllers/customerController");
 const {
   sendDriverOTP,
@@ -17,6 +18,7 @@ router.post("/drivers/verify-otp", verifyDriverOTP);
 router.post("/drivers/resend-otp", resendDriverOTP);
 router.post("/customers/send-otp", sendCustomerOTP);
 router.post("/customers/verify-otp", verifyCustomerOTP);
+router.post("/customers/resend-otp", resendCustomerOTP);
 router.post("/login", loginUser);
 
 module.exports = router;

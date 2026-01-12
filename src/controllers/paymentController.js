@@ -65,6 +65,112 @@ exports.createImmediatePayment = async (orderId) => {
 };
 
 // DRIVER: COLLECT PAYMENT
+// exports.collectPayment = async (req, res) => {
+//   try {
+//     const {
+//       paymentId,
+//       collectedAmount,
+//       paymentMethod = "cash_on_delivery",
+//       notes,
+//     } = req.body;
+//     const driverId = req.user.id;
+//     const tenantId = req.derivedTenantId;
+
+//     const payment = await prisma.payment.findFirst({
+//       where: {
+//         id: paymentId,
+//         tenantId,
+//         OR: [{ status: "PENDING" }, { status: "PARTIAL" }],
+//       },
+//       include: {
+//         order: true,
+//         subscription: true,
+//         customer: true,
+//       },
+//     });
+
+//     if (!payment) {
+//       return res
+//         .status(404)
+//         .json({ error: "Payment not found or already paid" });
+//     }
+
+//     const collectedAmountNum = parseFloat(collectedAmount);
+
+//     if (collectedAmountNum <= 0) {
+//       return res.status(400).json({ error: "Invalid amount" });
+//     }
+
+//     // Calculate new amounts
+//     const newPaidAmount = payment.paidAmount + collectedAmountNum;
+//     const newPendingAmount = Math.max(0, payment.amount - newPaidAmount);
+
+//     let newStatus = payment.status;
+//     if (newPendingAmount === 0) {
+//       newStatus = "PAID";
+//     } else if (newPaidAmount > 0) {
+//       newStatus = "PARTIAL";
+//     }
+
+//     const updatedPayment = await prisma.payment.update({
+//       where: { id: paymentId },
+//       data: {
+//         paidAmount: newPaidAmount,
+//         pendingAmount: newPendingAmount,
+//         status: newStatus,
+//         paymentMethod,
+//         paymentDate: new Date(),
+//         collectedByDriverId: driverId,
+//         notes,
+//       },
+//     });
+
+//     // Update customer's due amount
+//     await prisma.customer.update({
+//       where: { id: payment.customerId },
+//       data: {
+//         dueAmount: { decrement: collectedAmountNum },
+//       },
+//     });
+
+//     // If immediate payment, update order status
+//     if (payment.orderId) {
+//       await prisma.order.update({
+//         where: { id: payment.orderId },
+//         data: {
+//           paymentStatus: newStatus,
+//           paidAmount: newPaidAmount,
+//         },
+//       });
+//     }
+
+//     // Update driver's stats
+//     await prisma.driver.update({
+//       where: { id: driverId },
+//       data: {
+//         totalDeliveries: { increment: 1 },
+//       },
+//     });
+
+//     res.json({
+//       success: true,
+//       message: `Payment collected: ${collectedAmount}`,
+//       payment: updatedPayment,
+//       receipt: {
+//         paymentNumber: payment.paymentNumber,
+//         customerName: payment.customer.name,
+//         collectedAmount,
+//         pendingAmount: newPendingAmount,
+//         collectedBy: req.user.name,
+//         date: new Date().toISOString(),
+//       },
+//     });
+//   } catch (err) {
+//     console.error("Collect Payment Error:", err);
+//     res.status(500).json({ error: "Failed to collect payment" });
+//   }
+// };
+
 exports.collectPayment = async (req, res) => {
   try {
     const {
@@ -73,6 +179,7 @@ exports.collectPayment = async (req, res) => {
       paymentMethod = "cash_on_delivery",
       notes,
     } = req.body;
+
     const driverId = req.user.id;
     const tenantId = req.derivedTenantId;
 
@@ -97,18 +204,40 @@ exports.collectPayment = async (req, res) => {
 
     const collectedAmountNum = parseFloat(collectedAmount);
 
-    if (collectedAmountNum <= 0) {
-      return res.status(400).json({ error: "Invalid amount" });
+    if (isNaN(collectedAmountNum) || collectedAmountNum <= 0) {
+      return res.status(400).json({ error: "Invalid amount: must be a positive number" });
     }
 
-    // Calculate new amounts
-    const newPaidAmount = payment.paidAmount + collectedAmountNum;
+    // Define allowable over-collection buffer
+    // You can adjust this value based on your currency/business needs
+    const OVER_COLLECTION_BUFFER = 100; // e.g., allow up to ₹100 extra (for change issues)
+
+    const maxAllowable = payment.pendingAmount + OVER_COLLECTION_BUFFER;
+
+    if (collectedAmountNum > maxAllowable) {
+      return res.status(400).json({
+        error: `Collected amount exceeds maximum allowable limit.`,
+        message: `You can collect up to ${maxAllowable} (pending: ${payment.pendingAmount} + buffer: ${OVER_COLLECTION_BUFFER})`,
+        maxAllowable,
+        pendingAmount: payment.pendingAmount,
+        attempted: collectedAmountNum,
+      });
+    }
+
+    // Calculate actual amount to apply toward payment
+    const amountToApply = Math.min(collectedAmountNum, payment.pendingAmount);
+
+    // Change given back to customer (if overpaid slightly)
+    const changeGiven = collectedAmountNum - amountToApply;
+
+    // Calculate new paid and pending amounts
+    const newPaidAmount = payment.paidAmount + amountToApply;
     const newPendingAmount = Math.max(0, payment.amount - newPaidAmount);
 
     let newStatus = payment.status;
     if (newPendingAmount === 0) {
       newStatus = "PAID";
-    } else if (newPaidAmount > 0) {
+    } else if (newPaidAmount > payment.paidAmount) {
       newStatus = "PARTIAL";
     }
 
@@ -121,19 +250,18 @@ exports.collectPayment = async (req, res) => {
         paymentMethod,
         paymentDate: new Date(),
         collectedByDriverId: driverId,
-        notes,
+        notes: notes || (changeGiven > 0 ? `Customer paid extra ${changeGiven}, change returned.` : undefined),
       },
     });
 
-    // Update customer's due amount
+    // Update customer's due amount (only the actual applied amount)
     await prisma.customer.update({
       where: { id: payment.customerId },
       data: {
-        dueAmount: { decrement: collectedAmountNum },
+        dueAmount: { decrement: amountToApply },
       },
     });
 
-    // If immediate payment, update order status
     if (payment.orderId) {
       await prisma.order.update({
         where: { id: payment.orderId },
@@ -144,7 +272,6 @@ exports.collectPayment = async (req, res) => {
       });
     }
 
-    // Update driver's stats
     await prisma.driver.update({
       where: { id: driverId },
       data: {
@@ -154,12 +281,14 @@ exports.collectPayment = async (req, res) => {
 
     res.json({
       success: true,
-      message: `Payment collected: ${collectedAmount}`,
+      message: `Payment collected: ₹${collectedAmountNum}${changeGiven > 0 ? ` (change returned: ₹${changeGiven})` : ''}`,
       payment: updatedPayment,
       receipt: {
         paymentNumber: payment.paymentNumber,
         customerName: payment.customer.name,
-        collectedAmount,
+        collectedAmount: collectedAmountNum,
+        amountApplied: amountToApply,
+        changeGiven: changeGiven > 0 ? changeGiven : 0,
         pendingAmount: newPendingAmount,
         collectedBy: req.user.name,
         date: new Date().toISOString(),
