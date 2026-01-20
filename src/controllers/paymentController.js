@@ -281,7 +281,7 @@ exports.collectPayment = async (req, res) => {
 
     res.json({
       success: true,
-      message: `Payment collected: ₹${collectedAmountNum}${changeGiven > 0 ? ` (change returned: ₹${changeGiven})` : ''}`,
+      message: `Payment collected: Pkr${collectedAmountNum}${changeGiven > 0 ? ` (change returned: ₹${changeGiven})` : ''}`,
       payment: updatedPayment,
       receipt: {
         paymentNumber: payment.paymentNumber,

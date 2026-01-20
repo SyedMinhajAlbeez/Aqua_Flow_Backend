@@ -44,6 +44,7 @@ model Tenant {
   logo               String?
   phone              String?
   status             String             @default("active")
+  companyTariffs     CompanyTariff[]
   bottleInventory    BottleInventory?
   customers          Customer[]
   drivers            Driver[]
@@ -55,6 +56,7 @@ model Tenant {
   keeper             User               @relation("TenantKeeper", fields: [keeperId], references: [id])
   users              User[]             @relation("UserBelongsToTenant")
   zones              Zone[]
+  invoices           Invoice[]
 
   @@map("tenants")
 }
@@ -107,15 +109,18 @@ model Payment {
   cycleEndDate        DateTime?
   collectedByDriverId String?
   notes               String?
+  invoiceId           String?
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   paymentItems        PaymentItem[]
+  invoice             Invoice?              @relation(fields: [invoiceId], references: [id])
   collectedByDriver   Driver?               @relation(fields: [collectedByDriverId], references: [id])
   customer            Customer              @relation(fields: [customerId], references: [id])
   order               Order?                @relation(fields: [orderId], references: [id])
   subscription        Subscription?         @relation(fields: [subscriptionId], references: [id])
   tenant              Tenant                @relation(fields: [tenantId], references: [id])
 
+  @@index([invoiceId])
   @@index([tenantId])
   @@index([customerId])
   @@index([subscriptionId])
@@ -300,7 +305,7 @@ model Subscription {
 model Order {
   id                      String          @id @default(uuid())
   orderNumber             Int             @unique @default(autoincrement())
-  orderNumberDisplay      String          @unique
+  orderNumberDisplay      String?
   customerId              String
   driverId                String?
   zoneId                  String
@@ -364,6 +369,101 @@ model OrderItem {
   @@map("order_items")
 }
 
+model CompanyTariff {
+  id        String @id @default(uuid())
+  companyId String
+  tariffId  String
+
+  assignedAt    DateTime  @default(now())
+  assignedBy    String?
+  isActive      Boolean   @default(true)
+  effectiveFrom DateTime?
+
+  tenant Tenant @relation(fields: [companyId], references: [id])
+  tariff Tariff @relation(fields: [tariffId], references: [id])
+
+  @@index([companyId])
+  @@index([companyId, isActive])
+}
+
+model TariffSlab {
+  id          String      @id @default(uuid())
+  tariffId    String
+  productType ProductType
+
+  fromQty      Int // inclusive
+  toQty        Int? // null = infinity
+  pricePerUnit Decimal
+
+  createdAt DateTime @default(now())
+
+  tariff Tariff @relation(fields: [tariffId], references: [id], onDelete: Cascade)
+
+  @@index([tariffId, productType])
+}
+
+model Tariff {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  isActive    Boolean @default(true)
+
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  assignedBy    String?
+  createdBy     String // super_admin id
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  isDefault     Boolean         @default(false) // 👈 KEY CHANGE
+  slabs         TariffSlab[]
+  companyLinks  CompanyTariff[]
+
+  @@index([isActive])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  GENERATED
+  PAID
+}
+
+model Invoice {
+  id          String   @id @default(uuid())
+  companyId   String
+  periodStart DateTime
+  periodEnd   DateTime
+
+  totalAmount Decimal
+  paidAmount  Decimal @default(0)
+
+  billingStatus BillingStatus @default(UNPAID)
+  dueDate       DateTime
+
+  generatedAt DateTime  @default(now())
+  paidAt      DateTime?
+
+  lineItems InvoiceLineItem[]
+
+  company  Tenant    @relation(fields: [companyId], references: [id])
+  payments Payment[]
+}
+
+model InvoiceLineItem {
+  id        String @id @default(uuid())
+  invoiceId String
+
+  productType ProductType
+  fromQty     Int
+  toQty       Int?
+  unitPrice   Decimal
+  quantity    Int
+  amount      Decimal
+  tariffId    String? // optional
+  slabId      String? // optional
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
 enum UserRole {
   super_admin
   company_admin
@@ -422,4 +522,17 @@ enum SubscriptionStatus {
   PAUSED
   CANCELLED
   EXPIRED
+}
+
+enum ProductType {
+  REUSABLE
+  NON_REUSABLE
+}
+
+enum BillingStatus {
+  PAID
+  PARTIAL
+  UNPAID
+  OVERDUE
+  SUSPENDED
 }

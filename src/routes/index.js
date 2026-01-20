@@ -37,6 +37,14 @@ router.use(
   tenantMiddleware,
   require("./customerAdminRoutes")
 );
+
+router.use(
+  "/admin/customer-admin",
+  protect,
+  tenantMiddleware,
+  require("./billingsRoutes")
+);
+
 router.use(
   "/admin/drivers",
   protect,
@@ -65,5 +73,13 @@ router.use(
 );
 router.use("/orders", protect, tenantMiddleware, require("./orderRoutes"));
 router.use("/zones", protect, tenantMiddleware, require("./zoneRoutes"));
+
+router.use("/tariff", protect, tenantMiddleware, require("./tariffManagementRoutes"));
+
+router.use("/company-tariff", protect, tenantMiddleware, require("./companyTariffRoute"));
+
+
+router.use("/invoices", protect, tenantMiddleware, require("./invoiceRoutes"));
+
 
 module.exports = router;

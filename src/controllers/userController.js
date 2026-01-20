@@ -16,9 +16,25 @@ exports.getUsers = async (req, res) => {
         email: true,
         phone: true,
         role: true,
+        logo: true,
         createdAt: true,
         tenant:
           req.user.role === "super_admin" ? { select: { name: true } } : false,
+        // tenant:
+        //   req.user.role === "super_admin"
+        //     ? {
+        //         select: {
+        //           name: true,
+        //           companyTariffs: {
+        //             // <-- new relation
+        //             select: {
+        //               tariff: { select: { name: true, isDefault: true } },
+        //               assignedAt: true,
+        //             },
+        //           },
+        //         },
+        //       }
+        //     : false,
       },
       orderBy: { createdAt: "desc" },
     });
@@ -29,7 +45,6 @@ exports.getUsers = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 
 exports.getUsersStats = async (req, res) => {
   try {
@@ -64,7 +79,7 @@ exports.getUsersStats = async (req, res) => {
         totalCount,
         recentUsersCount,
         recentUsersPercentage: parseFloat(recentUsersPercentage),
-      }
+      },
     });
   } catch (err) {
     console.error(err);

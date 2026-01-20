@@ -1,5 +1,9 @@
 // src/routes/companyRoutes.js
 const express = require("express");
+
+const { protect } = require("../middleware/authMiddleware");
+const tenantMiddleware = require("../middleware/tenantMiddleware");
+const upload = require("../middleware/upload");
 const { createCompany } = require("../controllers/authController");
 const router = express.Router();
 
@@ -12,6 +16,20 @@ const router = express.Router();
 //   "logo": "https://example.com/logo.png"
 // }
 
-router.post("/create", createCompany);
+// const multer = require("multer");
+// const upload = multer({ dest: "uploads/" });
+
+// router.post(
+//   "/create",
+//   authenticate,
+//   upload.single("image"), // 👈 MUST match frontend key EXACTLY
+//   createCompany
+// );
+
+// router.post("/create", upload, createCompany);
+
+router.post("/create", protect, tenantMiddleware, upload, createCompany);
+
+// router.post("/create", createCompany);
 
 module.exports = router;
