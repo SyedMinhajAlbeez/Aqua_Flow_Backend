@@ -6,7 +6,7 @@ const {
   getTariffById,
   updateTariff,
   deactivateTariff,
-} = require("../controllers/TariffManagementController");
+} = require("../controllers/tariffManagementController.js");
 
 router.post("/create", createTariff);
 router.get("/get", getAllTariffs);
