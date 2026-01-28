@@ -1121,4 +1121,93 @@ Schedule:
 ================================
 `);
 
+
+
+
+// ... all your existing cron schedules ...
+
+// ────────────────────────────────────────────────────────────────
+// TEMP: Force-run recurring order creation NOW – for testing
+// Remove or comment out after testing
+// ────────────────────────────────────────────────────────────────
+(async () => {
+  console.log("═══════════════════════════════════════════════");
+  console.log("FORCE-RUNNING recurring order creation at", new Date().toLocaleString("en-PK"));
+  console.log("═══════════════════════════════════════════════");
+
+  try {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0);
+
+    const nextWeek = new Date();
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    nextWeek.setHours(0, 0, 0, 0);
+
+    // ── Copy-paste or extract the full logic from your 3 AM cron here ──
+    const subscriptions = await prisma.subscription.findMany({
+      where: {
+        status: "ACTIVE",
+        nextDeliveryDate: {
+          gte: tomorrow,
+          lte: nextWeek,
+        },
+      },
+      include: {
+        customer: {
+          include: {
+            orders: {
+              where: {
+                status: { in: ["completed", "delivered"] },
+                subscriptionId: { not: null },
+              },
+              orderBy: { createdAt: "desc" },
+              take: 1,
+            },
+          },
+        },
+        product: true,
+        orders: {
+          where: {
+            deliveryDate: {
+              gte: tomorrow,
+              lte: nextWeek,
+            },
+          },
+        },
+      },
+    });
+
+    console.log(`Found ${subscriptions.length} subscriptions eligible right now`);
+
+    let created = 0;
+    let skipped = 0;
+
+    for (const sub of subscriptions) {
+      console.log(`Processing sub ${sub.id} → next: ${sub.nextDeliveryDate.toISOString()}`);
+
+      const existingOrder = sub.orders.find(
+        (o) => o.deliveryDate.toDateString() === sub.nextDeliveryDate.toDateString()
+      );
+
+      if (existingOrder) {
+        console.log(`  → skipped (order already exists)`);
+        skipped++;
+        continue;
+      }
+
+      // ... rest of your loop logic: stock checks, withBottles calculation, transaction, etc. ...
+      // (paste the full body here – I shortened it for brevity)
+
+      // At the end of successful creation:
+      created++;
+      console.log(`  → CREATED order for ${sub.nextDeliveryDate.toISOString()}`);
+    }
+
+    console.log(`Force-run finished: created ${created}, skipped ${skipped}`);
+  } catch (err) {
+    console.error("Force-run failed:", err);
+  }
+})();
+
 module.exports = cron;

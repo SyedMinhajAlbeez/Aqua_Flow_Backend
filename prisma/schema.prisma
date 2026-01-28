@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
@@ -49,7 +49,8 @@ model Tenant {
   customers          Customer[]
   drivers            Driver[]
   orders             Order[]
-  payments           Payment[]
+  customerPayments   CustomerPayment[] // Company's customer payments
+  invoicePayments    InvoicePayment[] // Company's invoice payments
   productInventories ProductInventory[]
   products           Product[]
   subscriptions      Subscription[]
@@ -88,18 +89,18 @@ model Product {
   @@map("products")
 }
 
-model Payment {
+model CustomerPayment {
   id                  String                @id @default(uuid())
-  paymentNumber       String                @unique
-  customerId          String
-  tenantId            String
+  paymentNumber       String                @unique @default(uuid())
+  customerId          String?
+  tenantId            String // Company receiving payment
   orderId             String?
   subscriptionId      String?
   amount              Float
   paidAmount          Float                 @default(0)
   pendingAmount       Float                 @default(0)
   collectionType      PaymentCollectionType @default(IMMEDIATE)
-  dueDate             DateTime
+  dueDate             DateTime?
   paymentDate         DateTime?
   status              PaymentStatus         @default(PENDING)
   paymentMethod       PaymentMethod         @default(cash_on_delivery)
@@ -109,40 +110,63 @@ model Payment {
   cycleEndDate        DateTime?
   collectedByDriverId String?
   notes               String?
-  invoiceId           String?
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
-  paymentItems        PaymentItem[]
-  invoice             Invoice?              @relation(fields: [invoiceId], references: [id])
-  collectedByDriver   Driver?               @relation(fields: [collectedByDriverId], references: [id])
-  customer            Customer              @relation(fields: [customerId], references: [id])
-  order               Order?                @relation(fields: [orderId], references: [id])
-  subscription        Subscription?         @relation(fields: [subscriptionId], references: [id])
-  tenant              Tenant                @relation(fields: [tenantId], references: [id])
 
-  @@index([invoiceId])
+  // Relations
+  paymentItems      PaymentItem[]
+  collectedByDriver Driver?       @relation(fields: [collectedByDriverId], references: [id])
+  customer          Customer?     @relation(fields: [customerId], references: [id])
+  order             Order?        @relation(fields: [orderId], references: [id])
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id])
+  tenant            Tenant        @relation(fields: [tenantId], references: [id])
+
   @@index([tenantId])
   @@index([customerId])
   @@index([subscriptionId])
   @@index([orderId])
   @@index([status])
   @@index([dueDate])
-  @@map("payments")
+  @@index([paymentDate])
+  @@map("customer_payments")
+}
+
+model InvoicePayment {
+  id            String        @id @default(uuid())
+  invoiceId     String
+  tenantId      String // Company making the payment
+  amount        Float
+  paidAt        DateTime      @default(now())
+  paymentMethod PaymentMethod @default(bank_transfer)
+  reference     String? // Bank reference/transaction ID
+  status        PaymentStatus @default(PAID)
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Relations
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@index([invoiceId])
+  @@index([tenantId])
+  @@index([paidAt])
+  @@map("invoice_payments")
 }
 
 model PaymentItem {
-  id            String    @id @default(uuid())
+  id            String          @id @default(uuid())
   paymentId     String
   orderId       String
   orderItemId   String
   productName   String
   quantity      Int
   unitPrice     Float
-  depositAmount Float     @default(0)
+  depositAmount Float           @default(0)
   totalAmount   Float
-  order         Order     @relation(fields: [orderId], references: [id])
-  orderItem     OrderItem @relation(fields: [orderItemId], references: [id])
-  payment       Payment   @relation(fields: [paymentId], references: [id])
+  order         Order           @relation(fields: [orderId], references: [id])
+  orderItem     OrderItem       @relation(fields: [orderItemId], references: [id])
+  payment       CustomerPayment @relation(fields: [paymentId], references: [id]) // Changed to CustomerPayment
 
   @@map("payment_items")
 }
@@ -203,31 +227,31 @@ model Zone {
 }
 
 model Customer {
-  id              String         @id @default(uuid())
-  name            String
-  phone           String
-  address         String
-  email           String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-  tenantId        String
-  bottlesGiven    Int            @default(0)
-  dueAmount       Float          @default(0)
-  empties         Int            @default(0)
-  lastOrderDate   DateTime?
-  securityDeposit Float          @default(0)
-  sleepingSince   DateTime?
-  totalSpent      Float          @default(0)
-  city            String?
-  country         String?
-  postalCode      String?
-  zoneId          String?
-  status          CustomerStatus @default(active)
-  tenant          Tenant         @relation(fields: [tenantId], references: [id])
-  zone            Zone?          @relation(fields: [zoneId], references: [id])
-  orders          Order[]
-  payments        Payment[]
-  subscriptions   Subscription[]
+  id               String            @id @default(uuid())
+  name             String
+  phone            String
+  address          String
+  email            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  tenantId         String
+  bottlesGiven     Int               @default(0)
+  dueAmount        Float             @default(0)
+  empties          Int               @default(0)
+  lastOrderDate    DateTime?
+  securityDeposit  Float             @default(0)
+  sleepingSince    DateTime?
+  totalSpent       Float             @default(0)
+  city             String?
+  country          String?
+  postalCode       String?
+  zoneId           String?
+  status           CustomerStatus    @default(active)
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  zone             Zone?             @relation(fields: [zoneId], references: [id])
+  orders           Order[]
+  customerPayments CustomerPayment[]
+  subscriptions    Subscription[]
 
   @@unique([phone, tenantId])
   @@index([tenantId])
@@ -239,26 +263,26 @@ model Customer {
 }
 
 model Driver {
-  id              String    @id @default(uuid())
-  name            String
-  phone           String
-  zoneId          String
-  status          String    @default("active")
-  rating          Float?
-  totalDeliveries Int       @default(0)
-  todayDeliveries Int       @default(0)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  tenantId        String
-  userId          String?
-  totalRatings    Int       @default(0)
-  vehicleNumber   String
-  vehicleType     String
-  tenant          Tenant    @relation(fields: [tenantId], references: [id])
-  user            User?     @relation(fields: [userId], references: [id])
-  zone            Zone      @relation(fields: [zoneId], references: [id])
-  orders          Order[]
-  payments        Payment[]
+  id               String            @id @default(uuid())
+  name             String
+  phone            String
+  zoneId           String
+  status           String            @default("active")
+  rating           Float?
+  totalDeliveries  Int               @default(0)
+  todayDeliveries  Int               @default(0)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  tenantId         String
+  userId           String?
+  totalRatings     Int               @default(0)
+  vehicleNumber    String
+  vehicleType      String
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  user             User?             @relation(fields: [userId], references: [id])
+  zone             Zone              @relation(fields: [zoneId], references: [id])
+  orders           Order[]
+  customerPayments CustomerPayment[]
 
   @@unique([phone, tenantId])
   @@unique([vehicleNumber, tenantId])
@@ -289,7 +313,7 @@ model Subscription {
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   orders            Order[]
-  payments          Payment[]
+  customerPayments  CustomerPayment[]
   customer          Customer           @relation(fields: [customerId], references: [id])
   product           Product            @relation(fields: [productId], references: [id])
   tenant            Tenant             @relation(fields: [tenantId], references: [id])
@@ -303,8 +327,8 @@ model Subscription {
 }
 
 model Order {
-  id                      String          @id @default(uuid())
-  orderNumber             Int             @unique @default(autoincrement())
+  id                      String            @id @default(uuid())
+  orderNumber             Int               @unique @default(autoincrement())
   orderNumberDisplay      String?
   customerId              String
   driverId                String?
@@ -312,32 +336,32 @@ model Order {
   deliveryDate            DateTime
   deliveryAddress         String
   totalAmount             Float
-  paymentMethod           PaymentMethod   @default(cash_on_delivery)
-  status                  OrderStatus     @default(pending)
+  paymentMethod           PaymentMethod     @default(cash_on_delivery)
+  status                  OrderStatus       @default(pending)
   tenantId                String
   createdById             String?
-  createdAt               DateTime        @default(now())
-  updatedAt               DateTime        @updatedAt
-  acceptableDepositAmount Float           @default(0)
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+  acceptableDepositAmount Float             @default(0)
   scheduledDate           DateTime?
-  isRecurring             Boolean         @default(false)
+  isRecurring             Boolean           @default(false)
   nextRecurringDate       DateTime?
-  notificationSent        Boolean         @default(false)
-  recurrence              OrderRecurrence @default(NONE)
+  notificationSent        Boolean           @default(false)
+  recurrence              OrderRecurrence   @default(NONE)
   subscriptionId          String?
-  withBottles             Boolean         @default(true)
-  paidAmount              Float           @default(0)
+  withBottles             Boolean           @default(true)
+  paidAmount              Float             @default(0)
   paymentId               String?
-  paymentStatus           PaymentStatus   @default(PENDING)
+  paymentStatus           PaymentStatus     @default(PENDING)
   items                   OrderItem[]
-  createdBy               User?           @relation(fields: [createdById], references: [id])
-  customer                Customer        @relation(fields: [customerId], references: [id])
-  driver                  Driver?         @relation(fields: [driverId], references: [id])
-  subscription            Subscription?   @relation(fields: [subscriptionId], references: [id])
-  tenant                  Tenant          @relation(fields: [tenantId], references: [id])
-  zone                    Zone            @relation(fields: [zoneId], references: [id])
+  createdBy               User?             @relation(fields: [createdById], references: [id])
+  customer                Customer          @relation(fields: [customerId], references: [id])
+  driver                  Driver?           @relation(fields: [driverId], references: [id])
+  subscription            Subscription?     @relation(fields: [subscriptionId], references: [id])
+  tenant                  Tenant            @relation(fields: [tenantId], references: [id])
+  zone                    Zone              @relation(fields: [zoneId], references: [id])
   paymentItems            PaymentItem[]
-  payments                Payment[]
+  customerPayments        CustomerPayment[]
 
   @@index([subscriptionId])
   @@index([isRecurring])
@@ -349,6 +373,7 @@ model Order {
   @@index([customerId])
   @@index([driverId])
   @@index([orderNumberDisplay])
+  @@index([tenantId, deliveryDate, status])
   @@map("orders")
 }
 
@@ -382,6 +407,7 @@ model CompanyTariff {
   tenant Tenant @relation(fields: [companyId], references: [id])
   tariff Tariff @relation(fields: [tariffId], references: [id])
 
+  @@index([companyId, effectiveFrom])
   @@index([companyId])
   @@index([companyId, isActive])
 }
@@ -393,7 +419,8 @@ model TariffSlab {
 
   fromQty      Int // inclusive
   toQty        Int? // null = infinity
-  pricePerUnit Decimal
+  pricePerUnit Decimal? // Used for REUSABLE (fixed per unit)
+  percentage   Decimal? // NEW: Used for NON_REUSABLE (% of subtotal)
 
   createdAt DateTime @default(now())
 
@@ -436,32 +463,38 @@ model Invoice {
   totalAmount Decimal
   paidAmount  Decimal @default(0)
 
-  billingStatus BillingStatus @default(UNPAID)
-  dueDate       DateTime
+  billingStatus BillingStatus  @default(UNPAID)
+  status        InvoiceStatus?
+  dueDate       DateTime       @default(now()) // 🔹 temporary default for migration
 
   generatedAt DateTime  @default(now())
   paidAt      DateTime?
 
   lineItems InvoiceLineItem[]
 
-  company  Tenant    @relation(fields: [companyId], references: [id])
-  payments Payment[]
+  company Tenant @relation(fields: [companyId], references: [id])
+
+  payments InvoicePayment[]
+
+  @@index([companyId, periodStart, periodEnd])
 }
 
 model InvoiceLineItem {
   id        String @id @default(uuid())
   invoiceId String
 
-  productType ProductType
-  fromQty     Int
-  toQty       Int?
-  unitPrice   Decimal
-  quantity    Int
-  amount      Decimal
-  tariffId    String? // optional
-  slabId      String? // optional
-
-  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productType   ProductType
+  fromQty       Int
+  toQty         Int?
+  unitPrice     Decimal? // For REUSABLE: pricePerUnit
+  percentage    Decimal? // NEW: For NON_REUSABLE: percentage
+  baseAmount    Decimal? // NEW: For percentage lines: the subtotal the % was applied to
+  quantity      Int
+  amount        Decimal
+  tariffId      String? // optional
+  slabId        String? // optional
+  effectiveDate DateTime?
+  invoice       Invoice     @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 }
 
 enum UserRole {
@@ -480,6 +513,7 @@ enum OrderStatus {
   cancelled
   failed
   assigned
+  // scheduled
 }
 
 enum PaymentMethod {

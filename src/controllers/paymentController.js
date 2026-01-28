@@ -183,7 +183,7 @@ exports.collectPayment = async (req, res) => {
     const driverId = req.user.id;
     const tenantId = req.derivedTenantId;
 
-    const payment = await prisma.payment.findFirst({
+    const payment = await prisma.customerPayment.findFirst({
       where: {
         id: paymentId,
         tenantId,
@@ -241,7 +241,7 @@ exports.collectPayment = async (req, res) => {
       newStatus = "PARTIAL";
     }
 
-    const updatedPayment = await prisma.payment.update({
+    const updatedPayment = await prisma.customerPayment.update({
       where: { id: paymentId },
       data: {
         paidAmount: newPaidAmount,
@@ -343,7 +343,7 @@ exports.getTodaysPayments = async (req, res) => {
     dueWithin.setDate(dueWithin.getDate() + 7);
 
     // Get payments for customers in driver's zone
-    const payments = await prisma.payment.findMany({
+    const payments = await prisma.customerPayment.findMany({
       where: {
         tenantId,
         status: {
@@ -554,7 +554,8 @@ exports.getPaymentReports = async (req, res) => {
     if (status) where.status = status;
     if (collectionType) where.collectionType = collectionType;
 
-    const payments = await prisma.payment.findMany({
+    // Now using CustomerPayment model
+    const payments = await prisma.customerPayment.findMany({
       where,
       include: {
         customer: {
@@ -598,7 +599,7 @@ exports.getPaymentReports = async (req, res) => {
     });
 
     // Summary by collection type
-    const summaryByType = await prisma.payment.groupBy({
+    const summaryByType = await prisma.customerPayment.groupBy({
       by: ["collectionType", "status"],
       where,
       _sum: {
@@ -610,7 +611,7 @@ exports.getPaymentReports = async (req, res) => {
     });
 
     // Summary by driver
-    const summaryByDriver = await prisma.payment.groupBy({
+    const summaryByDriver = await prisma.customerPayment.groupBy({
       by: ["collectedByDriverId"],
       where: {
         ...where,
@@ -734,7 +735,7 @@ exports.getDriverCollectionHistory = async (req, res) => {
 
     // Get payments with pagination
     const [payments, total] = await Promise.all([
-      prisma.payment.findMany({
+      prisma.customerPayment.findMany({
         where,
         skip,
         take: limit,
@@ -778,11 +779,11 @@ exports.getDriverCollectionHistory = async (req, res) => {
         },
         orderBy: { paymentDate: 'desc' }
       }),
-      prisma.payment.count({ where })
+      prisma.customerPayment.count({ where })
     ]);
 
     // Calculate summary stats
-    const stats = await prisma.payment.aggregate({
+    const stats = await prisma.customerPayment.aggregate({
       where,
       _sum: {
         paidAmount: true,
@@ -795,7 +796,7 @@ exports.getDriverCollectionHistory = async (req, res) => {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
-    const dailySummary = await prisma.payment.groupBy({
+    const dailySummary = await prisma.customerPayment.groupBy({
       by: ['paymentDate'],
       where: {
         ...where,

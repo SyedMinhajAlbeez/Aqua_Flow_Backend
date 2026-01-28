@@ -16,20 +16,6 @@ const router = express.Router();
 //   "logo": "https://example.com/logo.png"
 // }
 
-// const multer = require("multer");
-// const upload = multer({ dest: "uploads/" });
-
-// router.post(
-//   "/create",
-//   authenticate,
-//   upload.single("image"), // 👈 MUST match frontend key EXACTLY
-//   createCompany
-// );
-
-// router.post("/create", upload, createCompany);
-
 router.post("/create", protect, tenantMiddleware, upload, createCompany);
-
-// router.post("/create", createCompany);
 
 module.exports = router;

@@ -656,12 +656,68 @@ exports.sendCustomerOTP = async (req, res) => {
     res.status(500).json({ error: "Failed to send OTP" });
   }
 };
+// exports.verifyCustomerOTP = async (req, res) => {
+//   try {
+//     const { phone, otp } = req.body;
+//     const tenantId = req.derivedTenantId;
+
+//     if (!phone || !otp) {
+//       return res.status(400).json({ error: "Phone and OTP are required" });
+//     }
+
+//     const normalizedPhone = phone.trim();
+
+//     // Verify OTP
+//     const isValid = await verifyOTP(normalizedPhone, otp);
+//     if (!isValid) {
+//       return res.status(400).json({ error: "Invalid or expired OTP" });
+//     }
+
+//     const customer = await prisma.customer.findFirst({
+//       where: { phone: normalizedPhone, tenantId },
+//     });
+
+//     if (!customer || customer.status !== "active") {
+//       return res.status(403).json({ error: "Invalid customer" });
+//     }
+
+//     // Generate JWT
+//     const token = require("jsonwebtoken").sign(
+//       {
+//         id: customer.id,
+//         role: "customer",
+//         tenantId: customer.tenantId,
+//       },
+//       process.env.JWT_SECRET,
+//       { expiresIn: "7d" }
+//     );
+
+//     res.json({
+//       success: true,
+//       message: "Login successful",
+//       token,
+//       customer: {
+//         id: customer.id,
+//         name: customer.name,
+//         phone: customer.phone,
+//         email: customer.email,
+//         address:customer.address,
+//         // zone: customer.zone.name,
+//         zoneId: customer.zoneId,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("Verify OTP error:", err);
+//     res.status(500).json({ error: "Login failed" });
+//   }
+// };
 
 // VERIFY OTP & LOGIN
 exports.verifyCustomerOTP = async (req, res) => {
   try {
     const { phone, otp } = req.body;
-    const tenantId = req.derivedTenantId;
+    // Don't use req.derivedTenantId here since this is a public endpoint
+    // const tenantId = req.derivedTenantId; // REMOVE THIS LINE
 
     if (!phone || !otp) {
       return res.status(400).json({ error: "Phone and OTP are required" });
@@ -675,13 +731,42 @@ exports.verifyCustomerOTP = async (req, res) => {
       return res.status(400).json({ error: "Invalid or expired OTP" });
     }
 
+    // Find customer by phone (without tenant filter since phone is unique per tenant)
     const customer = await prisma.customer.findFirst({
-      where: { phone: normalizedPhone, tenantId },
+      where: { phone: normalizedPhone },
+      include: {
+        zone: true,
+      },
     });
 
     if (!customer || customer.status !== "active") {
       return res.status(403).json({ error: "Invalid customer" });
     }
+
+    // Use customer.tenantId to fetch the tenant
+    const tenantId = customer.tenantId; // Get tenantId from customer
+
+    // Now fetch the tenant with keeper using the customer's tenantId
+    const tenantWithKeeper = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: {
+        keeper: {
+          select: {
+            id: true,
+            name: true,
+            // email: true,
+            phone: true,
+          }
+        }
+      }
+    });
+
+    console.log("Debug - Tenant with keeper:", {
+      tenantId,
+      tenantExists: !!tenantWithKeeper,
+      keeper: tenantWithKeeper?.keeper,
+      keeperId: tenantWithKeeper?.keeperId
+    });
 
     // Generate JWT
     const token = require("jsonwebtoken").sign(
@@ -694,7 +779,8 @@ exports.verifyCustomerOTP = async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    res.json({
+    // Prepare response
+    const response = {
       success: true,
       message: "Login successful",
       token,
@@ -703,11 +789,32 @@ exports.verifyCustomerOTP = async (req, res) => {
         name: customer.name,
         phone: customer.phone,
         email: customer.email,
-        address:customer.address,
-        // zone: customer.zone.name,
+        address: customer.address,
+        zone: customer.zone ? {
+          id: customer.zone.id,
+          name: customer.zone.name,
+        } : null,
         zoneId: customer.zoneId,
       },
-    });
+    };
+
+    // Add company admin info if available
+    if (tenantWithKeeper && tenantWithKeeper.keeper) {
+      response.companyAdmin = {
+        phone: tenantWithKeeper.keeper.phone || null,
+        name: tenantWithKeeper.keeper.name,
+        email: tenantWithKeeper.keeper.email,
+      };
+    } else {
+      // Fallback to tenant's own contact info
+      response.companyAdmin = {
+        phone: tenantWithKeeper?.phone || null,
+        name: tenantWithKeeper?.name || "Company",
+        email: tenantWithKeeper?.email || null,
+      };
+    }
+
+    res.json(response);
   } catch (err) {
     console.error("Verify OTP error:", err);
     res.status(500).json({ error: "Login failed" });

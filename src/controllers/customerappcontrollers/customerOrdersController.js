@@ -3,6 +3,499 @@ const prisma = require("../../prisma/client");
 
 
 // CREATE ORDER - CUSTOMER APP (EXACTLY SAME LOGIC AS ADMIN)
+// exports.createCustomerOrder = async (req, res) => {
+//   try {
+//     const {
+//       items,
+//       deliveryDate,
+//       paymentMethod = "cash_on_delivery",
+//       acceptableDepositAmount = 0,
+//       isRecurring = false,
+//       recurrence = "NONE",
+//       preferredTime = null,
+//       withBottles = true, // Original parameter
+//     } = req.body;
+
+//     const tenantId = req.derivedTenantId;
+//     const customerId = req.user.id; // Customer khud hai
+//     const userRole = req.user.role;
+
+//     // ✅ Only customers can use this API
+//     if (userRole !== "customer") {
+//       return res
+//         .status(403)
+//         .json({ error: "Only customers can create orders through this API" });
+//     }
+
+//     // ✅ Basic validation (EXACTLY LIKE ADMIN)
+//     if (!items?.length || !deliveryDate) {
+//       return res.status(400).json({
+//         error: "items and deliveryDate are required",
+//       });
+//     }
+//     if (acceptableDepositAmount < 0) {
+//       return res.status(400).json({ error: "Deposit cannot be negative" });
+//     }
+
+//     // ✅ Fetch customer with zone (EXACTLY LIKE ADMIN)
+//     const customer = await prisma.customer.findUnique({
+//       where: { id: customerId, tenantId },
+//       include: { zone: true },
+//     });
+//     if (!customer) return res.status(404).json({ error: "Customer not found" });
+//     if (!customer.zoneId)
+//       return res.status(400).json({ error: "Customer has no zone assigned" });
+
+//     // ✅ Process items first to determine product types (EXACTLY LIKE ADMIN)
+//     const products = [];
+//     let hasReusableProduct = false;
+//     let hasNonReusableProduct = false;
+//     let nonReusableProductNames = [];
+
+//     for (const item of items) {
+//       const product = await prisma.product.findUnique({
+//         where: { id: item.productId, tenantId },
+//       });
+//       if (!product || product.status !== "active") {
+//         return res
+//           .status(400)
+//           .json({ error: `Product not available: ${item.productId}` });
+//       }
+
+//       products.push({
+//         ...product,
+//         quantity: parseInt(item.quantity) || 1,
+//       });
+
+//       if (product.isReusable) {
+//         hasReusableProduct = true;
+//       } else {
+//         hasNonReusableProduct = true;
+//         nonReusableProductNames.push(product.name);
+//       }
+//     }
+
+//     // ✅ EFFECTIVE WITHBOTTLES LOGIC (EXACTLY LIKE ADMIN)
+//     let effectiveWithBottles = withBottles;
+
+//     // WITHBOTTLES VALIDATION - ONLY FOR REUSABLE PRODUCTS
+//     if (hasReusableProduct) {
+//       if (effectiveWithBottles === false || effectiveWithBottles === "false") {
+//         const hasPreviousReusableOrders = await prisma.order.findFirst({
+//           where: {
+//             customerId: customerId,
+//             tenantId,
+//             items: {
+//               some: {
+//                 product: {
+//                   isReusable: true,
+//                 },
+//               },
+//             },
+//             status: { in: ["completed", "delivered"] },
+//           },
+//         });
+
+//         if (!hasPreviousReusableOrders) {
+//           return res.status(400).json({
+//             error:
+//               "You must have received bottles before to order without bottles",
+//             solution: "Set withBottles to true for first-time bottle delivery",
+//           });
+//         }
+//       }
+//     } else {
+//       // Agar sirf non-reusable products hain, to withBottles always true
+//       effectiveWithBottles = true;
+//     }
+
+//     // ✅ RECURRING ORDER REQUIREMENTS (EXACTLY LIKE ADMIN)
+//     if (isRecurring) {
+//       // 1. Must have at least one reusable product
+//       if (!hasReusableProduct) {
+//         return res.status(400).json({
+//           error: "Recurring orders must include at least one reusable product",
+//         });
+//       }
+
+//       // 2. Must NOT have any non-reusable products
+//       if (hasNonReusableProduct) {
+//         return res.status(400).json({
+//           error: "Recurring orders can only contain reusable products.",
+//           nonReusableItems: nonReusableProductNames,
+//           solution:
+//             "Please remove non-reusable items or create as one-time order.",
+//         });
+//       }
+
+//       // 3. Validate recurrence type
+//       const validRecurrences = ["WEEKLY", "BI_WEEKLY", "MONTHLY"];
+//       if (!validRecurrences.includes(recurrence)) {
+//         return res.status(400).json({
+//           error: `Invalid recurrence. Must be one of: ${validRecurrences.join(
+//             ", "
+//           )}`,
+//         });
+//       }
+
+//       // 4. Validate recurrence is provided
+//       if (recurrence === "NONE") {
+//         return res.status(400).json({
+//           error:
+//             "Recurrence is required for recurring orders (WEEKLY, BI_WEEKLY, MONTHLY)",
+//         });
+//       }
+//     }
+
+//     // ✅ Check bottle inventory for withBottles true - ONLY FOR REUSABLE PRODUCTS (EXACTLY LIKE ADMIN)
+//     if (
+//       hasReusableProduct &&
+//       (effectiveWithBottles === true || effectiveWithBottles === "true")
+//     ) {
+//       const bottleInventory = await prisma.bottleInventory.findUnique({
+//         where: { tenantId },
+//       });
+
+//       for (const productData of products) {
+//         const product = productData;
+//         const quantity = productData.quantity;
+
+//         if (product.isReusable) {
+//           if (bottleInventory && bottleInventory.inStock < quantity) {
+//             return res.status(400).json({
+//               error: `Not enough bottles in stock for ${product.name}. Available: ${bottleInventory.inStock}, Required: ${quantity}`,
+//             });
+//           }
+//         }
+//       }
+//     }
+
+//     // ✅ PROCESS ITEMS FOR CALCULATIONS (EXACTLY LIKE ADMIN)
+//     let totalProductPrice = 0;
+//     let totalRequiredDeposit = 0;
+//     const orderItems = [];
+//     let totalReusableDelivered = 0;
+//     let circulatingReusableDelivered = 0;
+//     let expectedEmpties = 0;
+
+//     for (const productData of products) {
+//       const product = productData;
+//       const quantity = productData.quantity;
+
+//       // Stock check
+//       const inventory = await prisma.productInventory.findUnique({
+//         where: { productId_tenantId: { productId: product.id, tenantId } },
+//       });
+
+//       if (!inventory || inventory.currentStock < quantity) {
+//         return res.status(400).json({
+//           error: `${product.name} out of stock! Available: ${
+//             inventory?.currentStock || 0
+//           }`,
+//         });
+//       }
+
+//       const itemTotal = quantity * product.price;
+//       totalProductPrice += itemTotal;
+
+//       // DEPOSIT CALCULATION BASED ON WITHBOTTLES
+//       if (
+//         product.isReusable &&
+//         (effectiveWithBottles === true || effectiveWithBottles === "true")
+//       ) {
+//         totalRequiredDeposit += quantity * product.depositAmount;
+//       }
+
+//       orderItems.push({
+//         productId: product.id,
+//         quantity,
+//         unitPrice: product.price,
+//         depositAmount:
+//           product.isReusable &&
+//           (effectiveWithBottles === true || effectiveWithBottles === "true")
+//             ? product.depositAmount
+//             : 0,
+//         totalPrice: itemTotal,
+//       });
+
+//       // BOTTLE TRACKING BASED ON WITHBOTTLES
+//       if (product.isReusable) {
+//         if (effectiveWithBottles === true || effectiveWithBottles === "true") {
+//           totalReusableDelivered += quantity;
+//           if (product.requiresEmptyReturn) {
+//             circulatingReusableDelivered += quantity;
+//             expectedEmpties += quantity;
+//           }
+//         }
+//       }
+//     }
+
+//     // ✅ Deposit validation (EXACTLY LIKE ADMIN)
+//     if (
+//       hasReusableProduct &&
+//       (effectiveWithBottles === false || effectiveWithBottles === "false") &&
+//       acceptableDepositAmount > 0
+//     ) {
+//       return res.status(400).json({
+//         error: "Cannot accept deposit when withBottles is false",
+//       });
+//     }
+
+//     if (acceptableDepositAmount > totalRequiredDeposit) {
+//       return res.status(400).json({
+//         error: `Acceptable deposit cannot exceed required deposit (${totalRequiredDeposit})`,
+//       });
+//     }
+
+//     const totalAmount = totalProductPrice + acceptableDepositAmount;
+
+//     // ✅ ORDER NUMBER (EXACTLY LIKE ADMIN)
+//     const orderCount = await prisma.order.count({ where: { tenantId } });
+//     const orderNumberDisplay = `#${1000 + orderCount + 1}`;
+
+//     // ✅ CALCULATE NEXT RECURRING DATE (EXACTLY LIKE ADMIN)
+//     let nextRecurringDate = null;
+//     if (isRecurring) {
+//       const deliveryDateObj = new Date(deliveryDate);
+//       nextRecurringDate = new Date(deliveryDateObj);
+
+//       switch (recurrence) {
+//         case "WEEKLY":
+//           nextRecurringDate.setDate(deliveryDateObj.getDate() + 7);
+//           break;
+//         case "BI_WEEKLY":
+//           nextRecurringDate.setDate(deliveryDateObj.getDate() + 14);
+//           break;
+//         case "MONTHLY":
+//           nextRecurringDate.setMonth(deliveryDateObj.getMonth() + 1);
+//           break;
+//       }
+//     }
+
+//     // ✅ MAIN TRANSACTION (EXACTLY LIKE ADMIN)
+//     const result = await prisma.$transaction(
+//       async (tx) => {
+//         // 1. Create Order
+//         const newOrder = await tx.order.create({
+//           data: {
+//             orderNumberDisplay,
+//             customerId,
+//             zoneId: customer.zoneId,
+//             deliveryDate: new Date(deliveryDate),
+//             deliveryAddress: customer.address,
+//             totalAmount,
+//             acceptableDepositAmount,
+//             paymentMethod,
+//             // status: "pending", // Customer orders always start as pending
+//             status: isRecurring ? "scheduled" : "pending",
+//             tenantId,
+//             createdById: null, // Customer self-order
+//             isRecurring,
+//             recurrence: isRecurring ? recurrence : "NONE",
+//             nextRecurringDate,
+//             withBottles: hasReusableProduct
+//               ? effectiveWithBottles === true || effectiveWithBottles === "true"
+//               : true,
+//             items: { create: orderItems },
+//           },
+//         });
+
+//         // 2. Update Customer Security Deposit
+//         if (acceptableDepositAmount > 0) {
+//           await tx.customer.update({
+//             where: { id: customerId },
+//             data: { securityDeposit: { increment: acceptableDepositAmount } },
+//           });
+//         }
+
+//         // 3. Decrement Product Stock
+//         for (const item of items) {
+//           await tx.productInventory.update({
+//             where: {
+//               productId_tenantId: { productId: item.productId, tenantId },
+//             },
+//             data: {
+//               currentStock: { decrement: parseInt(item.quantity) || 1 },
+//               totalSold: { increment: parseInt(item.quantity) || 1 },
+//             },
+//           });
+//         }
+
+//         // 4. Global Bottle Pool Update
+//         if (
+//           hasReusableProduct &&
+//           totalReusableDelivered > 0 &&
+//           (effectiveWithBottles === true || effectiveWithBottles === "true")
+//         ) {
+//           await tx.bottleInventory.upsert({
+//             where: { tenantId },
+//             update: {
+//               inStock: { decrement: totalReusableDelivered },
+//               withCustomers: { increment: totalReusableDelivered },
+//             },
+//             create: {
+//               tenantId,
+//               inStock: Math.max(0, -totalReusableDelivered),
+//               withCustomers: totalReusableDelivered,
+//             },
+//           });
+//         }
+
+//         // 5. Customer empties tracking
+//         if (
+//           hasReusableProduct &&
+//           circulatingReusableDelivered > 0 &&
+//           (effectiveWithBottles === true || effectiveWithBottles === "true")
+//         ) {
+//           await tx.customer.update({
+//             where: { id: customerId },
+//             data: {
+//               empties: { increment: expectedEmpties },
+//               bottlesGiven: { increment: circulatingReusableDelivered },
+//             },
+//           });
+//         }
+
+//         // 6. CREATE SUBSCRIPTION IF RECURRING
+//         let subscription = null;
+//         if (
+//           isRecurring &&
+//           hasReusableProduct &&
+//           (effectiveWithBottles === true || effectiveWithBottles === "true")
+//         ) {
+//           // For each reusable product, create a subscription
+//           for (const orderItem of orderItems) {
+//             const product = await tx.product.findUnique({
+//               where: { id: orderItem.productId },
+//             });
+
+//             if (product.isReusable) {
+//               subscription = await tx.subscription.create({
+//                 data: {
+//                   customerId,
+//                   tenantId,
+//                   productId: product.id,
+//                   quantity: orderItem.quantity,
+//                   recurrence,
+//                   deliveryDayOfWeek: new Date(deliveryDate).getDay(),
+//                   nextDeliveryDate: nextRecurringDate,
+//                   preferredTime,
+//                   status: "ACTIVE",
+//                 },
+//               });
+
+//               // Link subscription to order
+//               await tx.order.update({
+//                 where: { id: newOrder.id },
+//                 data: { subscriptionId: subscription.id },
+//               });
+
+//               break;
+//             }
+//           }
+//         }
+
+//         // FINAL FETCH WITH ALL DETAILS
+//         const finalOrder = await tx.order.findUnique({
+//           where: { id: newOrder.id },
+//           include: {
+//             customer: {
+//               select: {
+//                 id: true,
+//                 name: true,
+//                 phone: true,
+//                 address: true,
+//               },
+//             },
+//             zone: { select: { id: true, name: true } },
+//             items: {
+//               include: {
+//                 product: {
+//                   select: {
+//                     id: true,
+//                     name: true,
+//                     size: true,
+//                     price: true,
+//                     depositAmount: true,
+//                     isReusable: true,
+//                     requiresEmptyReturn: true,
+//                   },
+//                 },
+//               },
+//             },
+//             subscription: isRecurring
+//               ? {
+//                   select: {
+//                     id: true,
+//                     recurrence: true,
+//                     nextDeliveryDate: true,
+//                     status: true,
+//                   },
+//                 }
+//               : false,
+//           },
+//         });
+
+//         return {
+//           order: finalOrder,
+//           subscription: subscription,
+//         };
+//       },
+//       { timeout: 20000 }
+//     );
+
+//     // ✅ RESPONSE (EXACTLY LIKE ADMIN)
+//     res.status(201).json({
+//       success: true,
+//       message: isRecurring
+//         ? `Recurring order created successfully! ${
+//             hasReusableProduct
+//               ? effectiveWithBottles === true || effectiveWithBottles === "true"
+//                 ? "With bottles"
+//                 : "Refill only"
+//               : ""
+//           }.`
+//         : `Order created successfully! ${
+//             hasReusableProduct
+//               ? effectiveWithBottles === true || effectiveWithBottles === "true"
+//                 ? "With bottles"
+//                 : "Refill only"
+//               : ""
+//           }.`,
+//       order: {
+//         ...result.order,
+//         isRecurring,
+//         recurrence: isRecurring ? recurrence : "NONE",
+//         nextRecurringDate: result.order.nextRecurringDate,
+//         withBottles: hasReusableProduct
+//           ? effectiveWithBottles === true || effectiveWithBottles === "true"
+//           : true,
+//       },
+//       subscription: result.subscription,
+//       details: {
+//         withBottles: hasReusableProduct
+//           ? effectiveWithBottles === true || effectiveWithBottles === "true"
+//           : true,
+//         hasReusableProduct,
+//         hasNonReusableProduct,
+//         totalRequiredDeposit,
+//         acceptableDepositAmount,
+//         reusableBottlesDelivered: totalReusableDelivered,
+//         expectedEmpties,
+//         initialStatus: "pending",
+//         isCustomerOrder: true,
+//         nextDelivery: isRecurring ? nextRecurringDate : null,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("Create Customer Order Error:", err);
+//     res.status(500).json({
+//       success: false,
+//       error: "Failed to create order",
+//       details: err.message,
+//     });
+//   }
+// };
 exports.createCustomerOrder = async (req, res) => {
   try {
     const {
@@ -189,9 +682,8 @@ exports.createCustomerOrder = async (req, res) => {
 
       if (!inventory || inventory.currentStock < quantity) {
         return res.status(400).json({
-          error: `${product.name} out of stock! Available: ${
-            inventory?.currentStock || 0
-          }`,
+          error: `${product.name} out of stock! Available: ${inventory?.currentStock || 0
+            }`,
         });
       }
 
@@ -212,7 +704,7 @@ exports.createCustomerOrder = async (req, res) => {
         unitPrice: product.price,
         depositAmount:
           product.isReusable &&
-          (effectiveWithBottles === true || effectiveWithBottles === "true")
+            (effectiveWithBottles === true || effectiveWithBottles === "true")
             ? product.depositAmount
             : 0,
         totalPrice: itemTotal,
@@ -249,10 +741,6 @@ exports.createCustomerOrder = async (req, res) => {
 
     const totalAmount = totalProductPrice + acceptableDepositAmount;
 
-    // ✅ ORDER NUMBER (EXACTLY LIKE ADMIN)
-    const orderCount = await prisma.order.count({ where: { tenantId } });
-    const orderNumberDisplay = `#${1000 + orderCount + 1}`;
-
     // ✅ CALCULATE NEXT RECURRING DATE (EXACTLY LIKE ADMIN)
     let nextRecurringDate = null;
     if (isRecurring) {
@@ -278,7 +766,6 @@ exports.createCustomerOrder = async (req, res) => {
         // 1. Create Order
         const newOrder = await tx.order.create({
           data: {
-            orderNumberDisplay,
             customerId,
             zoneId: customer.zoneId,
             deliveryDate: new Date(deliveryDate),
@@ -286,8 +773,8 @@ exports.createCustomerOrder = async (req, res) => {
             totalAmount,
             acceptableDepositAmount,
             paymentMethod,
-            // status: "pending", // Customer orders always start as pending
-            status: isRecurring ? "scheduled" : "pending",
+            // status: isRecurring ? "scheduled" : "pending",
+            status: "pending",
             tenantId,
             createdById: null, // Customer self-order
             isRecurring,
@@ -300,7 +787,14 @@ exports.createCustomerOrder = async (req, res) => {
           },
         });
 
-        // 2. Update Customer Security Deposit
+        // 2. Generate and set orderNumberDisplay for EVERY order (recurring or not)
+        const displayNumber = `#${1000 + newOrder.orderNumber}`;
+        await tx.order.update({
+          where: { id: newOrder.id },
+          data: { orderNumberDisplay: displayNumber },
+        });
+
+        // 3. Update Customer Security Deposit
         if (acceptableDepositAmount > 0) {
           await tx.customer.update({
             where: { id: customerId },
@@ -308,7 +802,7 @@ exports.createCustomerOrder = async (req, res) => {
           });
         }
 
-        // 3. Decrement Product Stock
+        // 4. Decrement Product Stock
         for (const item of items) {
           await tx.productInventory.update({
             where: {
@@ -321,7 +815,7 @@ exports.createCustomerOrder = async (req, res) => {
           });
         }
 
-        // 4. Global Bottle Pool Update
+        // 5. Global Bottle Pool Update
         if (
           hasReusableProduct &&
           totalReusableDelivered > 0 &&
@@ -341,7 +835,7 @@ exports.createCustomerOrder = async (req, res) => {
           });
         }
 
-        // 5. Customer empties tracking
+        // 6. Customer empties tracking
         if (
           hasReusableProduct &&
           circulatingReusableDelivered > 0 &&
@@ -356,7 +850,7 @@ exports.createCustomerOrder = async (req, res) => {
           });
         }
 
-        // 6. CREATE SUBSCRIPTION IF RECURRING
+        // 7. CREATE SUBSCRIPTION IF RECURRING
         let subscription = null;
         if (
           isRecurring &&
@@ -425,13 +919,13 @@ exports.createCustomerOrder = async (req, res) => {
             },
             subscription: isRecurring
               ? {
-                  select: {
-                    id: true,
-                    recurrence: true,
-                    nextDeliveryDate: true,
-                    status: true,
-                  },
-                }
+                select: {
+                  id: true,
+                  recurrence: true,
+                  nextDeliveryDate: true,
+                  status: true,
+                },
+              }
               : false,
           },
         });
@@ -448,20 +942,18 @@ exports.createCustomerOrder = async (req, res) => {
     res.status(201).json({
       success: true,
       message: isRecurring
-        ? `Recurring order created successfully! ${
-            hasReusableProduct
-              ? effectiveWithBottles === true || effectiveWithBottles === "true"
-                ? "With bottles"
-                : "Refill only"
-              : ""
-          }.`
-        : `Order created successfully! ${
-            hasReusableProduct
-              ? effectiveWithBottles === true || effectiveWithBottles === "true"
-                ? "With bottles"
-                : "Refill only"
-              : ""
-          }.`,
+        ? `Recurring order created successfully! ${hasReusableProduct
+          ? effectiveWithBottles === true || effectiveWithBottles === "true"
+            ? "With bottles"
+            : "Refill only"
+          : ""
+        }.`
+        : `Order created successfully! ${hasReusableProduct
+          ? effectiveWithBottles === true || effectiveWithBottles === "true"
+            ? "With bottles"
+            : "Refill only"
+          : ""
+        }.`,
       order: {
         ...result.order,
         isRecurring,
@@ -496,7 +988,6 @@ exports.createCustomerOrder = async (req, res) => {
     });
   }
 };
-
 // GET CUSTOMER'S PAYMENT HISTORY
 exports.getCustomerPayments = async (req, res) => {
   try {
@@ -514,7 +1005,7 @@ exports.getCustomerPayments = async (req, res) => {
     if (month) where.month = parseInt(month);
     if (year) where.year = parseInt(year);
 
-    const payments = await prisma.payment.findMany({
+    const payments = await prisma.customerPayment.findMany({
       where,
       include: {
         order: {

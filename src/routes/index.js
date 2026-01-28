@@ -81,5 +81,17 @@ router.use("/company-tariff", protect, tenantMiddleware, require("./companyTarif
 
 router.use("/invoices", protect, tenantMiddleware, require("./invoiceRoutes"));
 
+router.use("/company-payment", protect, tenantMiddleware, require("./createPaymentCompRoute"));
+
+router.use(
+  "/reports",
+  protect,
+  tenantMiddleware,
+  require("./reportRoutes")
+);
+
+
+
+
 
 module.exports = router;

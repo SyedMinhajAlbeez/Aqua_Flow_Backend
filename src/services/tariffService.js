@@ -63,26 +63,54 @@ const prisma = require("../prisma/client");
 //     return tariff;
 //   });
 // };
+const getStartOfDayUTC = () => {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+};
 
+/**
+ * Helper: Get start of month in UTC (for retroactive default tariffs)
+ */
+const getStartOfMonthUTC = () => {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+};
 
 const createTariff = async (data, superAdminId) => {
-  // Basic validations
   if (!data.name || !data.slabs || !data.effectiveFrom) {
     throw new Error("Name, effectiveFrom, and slabs are required");
   }
 
-  // Validate slabs
+  if (!Array.isArray(data.slabs) || data.slabs.length === 0) {
+    throw new Error("At least one slab is required");
+  }
+
+  // Validate slabs (REUSABLE=pricePerUnit, NON_REUSABLE=percentage)
   for (let slab of data.slabs) {
     if (slab.fromQty < 0 || (slab.toQty && slab.toQty < slab.fromQty)) {
-      throw new Error(`Invalid slab for ${slab.productType}`);
+      throw new Error(`Invalid quantity range for ${slab.productType}`);
     }
-    if (slab.pricePerUnit <= 0) {
-      throw new Error(`Price must be > 0 for ${slab.productType}`);
+    if (slab.productType === 'REUSABLE') {
+      if (!slab.pricePerUnit || slab.pricePerUnit <= 0) {
+        throw new Error(`pricePerUnit must be > 0 for REUSABLE`);
+      }
+      if (slab.percentage) {
+        throw new Error(`percentage not allowed for REUSABLE`);
+      }
+    } else if (slab.productType === 'NON_REUSABLE') {
+      if (!slab.percentage || slab.percentage <= 0) {
+        throw new Error(`percentage must be > 0 for NON_REUSABLE`);
+      }
+      if (slab.pricePerUnit) {
+        throw new Error(`pricePerUnit not allowed for NON_REUSABLE`);
+      }
+    } else {
+      throw new Error(`Invalid productType: ${slab.productType}`);
     }
   }
 
   return prisma.$transaction(async (tx) => {
-    // If this tariff is default, deactivate old default
+    // Deactivate old default tariffs
     if (data.isDefault) {
       await tx.tariff.updateMany({
         where: { isDefault: true, isActive: true },
@@ -90,7 +118,7 @@ const createTariff = async (data, superAdminId) => {
       });
     }
 
-    // Create the new tariff
+    // Create tariff
     const tariff = await tx.tariff.create({
       data: {
         name: data.name,
@@ -103,27 +131,35 @@ const createTariff = async (data, superAdminId) => {
 
     // Create slabs
     const slabsData = data.slabs.map((slab) => ({
-      ...slab,
       tariffId: tariff.id,
+      productType: slab.productType,
+      fromQty: slab.fromQty,
+      toQty: slab.toQty ?? null,
+      pricePerUnit: slab.pricePerUnit ?? null,
+      percentage: slab.percentage ?? null,
     }));
     await tx.tariffSlab.createMany({ data: slabsData });
 
-    // If default, assign to all companies without custom tariff
+    // 🔥 FIXED: Default tariff auto-assignment se start-of-DAY/MONTH
     if (data.isDefault) {
       const companiesWithoutCustomTariff = await tx.tenant.findMany({
         where: {
-          NOT: {
-            subscriptions: { some: {} } // optional filter for companies with assigned tariffs
-          },
+          companyTariffs: { none: { isActive: true } },
         },
       });
+
+      // ✅ START OF DAY (recommended for most cases)
+      const effectiveFrom = getStartOfDayUTC();
+      
+      // ✅ OR START OF MONTH (if you want retroactive for whole month testing)
+      // const effectiveFrom = getStartOfMonthUTC();
 
       const companyTariffData = companiesWithoutCustomTariff.map((company) => ({
         companyId: company.id,
         tariffId: tariff.id,
         assignedBy: superAdminId,
-        // isDefaultApplied: true,
-        effectiveFrom: new Date(),
+        isActive: true,
+        effectiveFrom: effectiveFrom,  // ← FIXED: No more new Date() timestamp hell
       }));
 
       if (companyTariffData.length > 0) {
@@ -167,24 +203,32 @@ const updateTariff = async (id, data, superAdminId) => {
     throw new Error("Name, effectiveFrom, and slabs are required");
   }
 
+  // Slab validation (same as create)
+  for (let slab of data.slabs) {
+    if (slab.fromQty < 0 || (slab.toQty && slab.toQty < slab.fromQty)) {
+      throw new Error(`Invalid quantity range for ${slab.productType}`);
+    }
+    if (slab.productType === 'REUSABLE') {
+      if (!slab.pricePerUnit || slab.pricePerUnit <= 0) {
+        throw new Error(`pricePerUnit must be > 0 for REUSABLE`);
+      }
+    } else if (slab.productType === 'NON_REUSABLE') {
+      if (!slab.percentage || slab.percentage <= 0) {
+        throw new Error(`percentage must be > 0 for NON_REUSABLE`);
+      }
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const oldTariff = await tx.tariff.findUnique({ where: { id } });
+    if (!oldTariff) throw new Error("Tariff not found");
 
-    if (!oldTariff) {
-      throw new Error("Tariff not found");
-    }
-
-    // 🔒 Deactivate old tariff
+    // Deactivate old version
     await tx.tariff.update({
       where: { id },
-      data: {
-        isActive: false,
-        isDefault: false,
-        effectiveTo: new Date()
-      }
+      data: { isActive: false, isDefault: false, effectiveTo: new Date() }
     });
 
-    // 🔥 Handle default logic
     if (data.isDefault) {
       await tx.tariff.updateMany({
         where: { isDefault: true },
@@ -192,7 +236,7 @@ const updateTariff = async (id, data, superAdminId) => {
       });
     }
 
-    // ✅ Create new version
+    // Create new version
     const newTariff = await tx.tariff.create({
       data: {
         name: data.name,
@@ -208,9 +252,9 @@ const updateTariff = async (id, data, superAdminId) => {
       productType: slab.productType,
       fromQty: slab.fromQty,
       toQty: slab.toQty ?? null,
-      pricePerUnit: slab.pricePerUnit
+      pricePerUnit: slab.pricePerUnit ?? null,
+      percentage: slab.percentage ?? null,
     }));
-
     await tx.tariffSlab.createMany({ data: slabsData });
 
     return newTariff;
@@ -222,21 +266,12 @@ const updateTariff = async (id, data, superAdminId) => {
  */
 const deactivateTariff = async (id) => {
   const tariff = await prisma.tariff.findUnique({ where: { id } });
-
-  if (!tariff) {
-    throw new Error("Tariff not found");
-  }
-
-  if (tariff.isDefault) {
-    throw new Error("Default tariff cannot be deactivated");
-  }
+  if (!tariff) throw new Error("Tariff not found");
+  if (tariff.isDefault) throw new Error("Default tariff cannot be deactivated");
 
   return prisma.tariff.update({
     where: { id },
-    data: {
-      isActive: false,
-      effectiveTo: new Date()
-    }
+    data: { isActive: false, effectiveTo: new Date() }
   });
 };
 
@@ -245,13 +280,8 @@ const deactivateTariff = async (id) => {
  */
 const getDefaultTariff = async () => {
   return prisma.tariff.findFirst({
-    where: {
-      isDefault: true,
-      isActive: true
-    },
-    include: {
-      slabs: { orderBy: { fromQty: "asc" } }
-    }
+    where: { isDefault: true, isActive: true },
+    include: { slabs: { orderBy: { fromQty: "asc" } } }
   });
 };
 

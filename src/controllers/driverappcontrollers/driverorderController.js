@@ -236,11 +236,11 @@ exports.getTodayRecurringOrders = async (req, res) => {
         },
         subscription: order.subscription
           ? {
-              id: order.subscription.id,
-              recurrence: order.subscription.recurrence,
-              preferredTime: order.subscription.preferredTime,
-              totalDeliveries: order.subscription.totalDeliveries,
-            }
+            id: order.subscription.id,
+            recurrence: order.subscription.recurrence,
+            preferredTime: order.subscription.preferredTime,
+            totalDeliveries: order.subscription.totalDeliveries,
+          }
           : null,
         items: order.items.map((item) => ({
           product: item.product.name,
@@ -254,16 +254,14 @@ exports.getTodayRecurringOrders = async (req, res) => {
         expectedEmpties, // ✅ Now correct: 0 for first-time, actual for refill
         note:
           order.status === "delivered"
-            ? `🔄 Delivered - ${
-                expectedEmpties > 0
-                  ? `Collect ${expectedEmpties} empties!`
-                  : "First time delivery - no empties expected"
-              }`
-            : `🔁 ${
-                order.withBottles
-                  ? "First time with bottles"
-                  : `Refill order - ${expectedEmpties} empties to collect`
-              } - Delivery Pending`,
+            ? `🔄 Delivered - ${expectedEmpties > 0
+              ? `Collect ${expectedEmpties} empties!`
+              : "First time delivery - no empties expected"
+            }`
+            : `🔁 ${order.withBottles
+              ? "First time with bottles"
+              : `Refill order - ${expectedEmpties} empties to collect`
+            } - Delivery Pending`,
       };
     });
 
@@ -534,7 +532,7 @@ exports.completeOrderWithEmpties = async (req, res) => {
             .toString(36)
             .substr(2, 9)}`;
 
-          const payment = await tx.payment.create({
+          const payment = await tx.customerPayment.create({
             data: {
               paymentNumber,
               customerId: order.customerId,
@@ -546,6 +544,7 @@ exports.completeOrderWithEmpties = async (req, res) => {
               dueDate: order.deliveryDate,
               status: "PENDING",
               paymentMethod: "cash_on_delivery",
+              collectedByDriverId: driverId,
               paymentItems: {
                 create: paymentItems,
               },
@@ -576,7 +575,7 @@ exports.completeOrderWithEmpties = async (req, res) => {
     let paymentInfo = null;
 
     if (paymentCreated) {
-      const payment = await prisma.payment.findFirst({
+      const payment = await prisma.customerPayment.findFirst({
         where: { orderId: id, tenantId },
         select: {
           id: true,
@@ -749,9 +748,9 @@ exports.getTodayAllOrders = async (req, res) => {
         isRecurring: order.isRecurring || false,
         subscription: order.subscription
           ? {
-              recurrence: order.subscription.recurrence,
-              preferredTime: order.subscription.preferredTime,
-            }
+            recurrence: order.subscription.recurrence,
+            preferredTime: order.subscription.preferredTime,
+          }
           : null,
         expectedEmpties, // ✅ Correct now
         customerEmpties: order.customer.empties,
@@ -1048,11 +1047,10 @@ exports.markAsDelivered = async (req, res) => {
 
     res.json({
       success: true,
-      message: `Order delivered! ${
-        totalExpectedEmpties > 0
-          ? `Collect ${totalExpectedEmpties} empties.`
-          : "First time delivery - no empties to collect."
-      }`,
+      message: `Order delivered! ${totalExpectedEmpties > 0
+        ? `Collect ${totalExpectedEmpties} empties.`
+        : "First time delivery - no empties to collect."
+        }`,
       order: updatedOrder,
       expectedEmpties: totalExpectedEmpties,
       customerEmpties: order.customer.empties,

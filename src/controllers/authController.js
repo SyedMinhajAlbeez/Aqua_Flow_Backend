@@ -4,7 +4,6 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const companyTariffService = require("../services/companyTariffService"); // <-- our new service
 
-
 const fs = require("fs");
 const path = require("path");
 
@@ -23,8 +22,6 @@ const deleteOldImage = (imageUrl) => {
   }
 };
 
-
-
 // exports.createCompany = async (req, res) => {
 //   try {
 //     console.log("📥 BODY:", req.body);
@@ -34,7 +31,6 @@ const deleteOldImage = (imageUrl) => {
 //     const { name, email, password, phone, address, role } = req.body;
 //     const imageUrl = req.file ? `/images/${req.file.filename}` : null;
 
-    
 //     if (req.user?.role !== "super_admin") {
 //       return res.status(403).json({
 //         message: "Only Super Admin can create company",
@@ -125,14 +121,6 @@ const deleteOldImage = (imageUrl) => {
 //   }
 // };
 
-
-
-
-
-
-
-
-
 //hussain
 // // SUPER ADMIN: Create Company + First Admin User
 // exports.createCompany = async (req, res) => {
@@ -203,9 +191,6 @@ const deleteOldImage = (imageUrl) => {
 //   }
 // };
 
-
-
-
 exports.createCompany = async (req, res) => {
   try {
     console.log("📥 BODY:", req.body);
@@ -226,8 +211,11 @@ exports.createCompany = async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const existing = await prisma.user.findFirst({ where: { email: normalizedEmail } });
-    if (existing) return res.status(400).json({ message: "Email already exists" });
+    const existing = await prisma.user.findFirst({
+      where: { email: normalizedEmail },
+    });
+    if (existing)
+      return res.status(400).json({ message: "Email already exists" });
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -258,7 +246,10 @@ exports.createCompany = async (req, res) => {
     });
 
     // 3️⃣ Link tenant to company-admin
-    await prisma.user.update({ where: { id: user.id }, data: { tenantId: tenant.id } });
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { tenantId: tenant.id },
+    });
 
     // 4️⃣ Auto-assign default tariff
     await companyTariffService.autoAssignDefault(tenant.id, req.user.id);
@@ -267,7 +258,7 @@ exports.createCompany = async (req, res) => {
     const token = jwt.sign(
       { id: user.id, tenantId: tenant.id, role: "company_admin" },
       process.env.JWT_SECRET,
-      { expiresIn: "7d" }
+      { expiresIn: "7d" },
     );
 
     const responsePayload = {
@@ -291,7 +282,6 @@ exports.createCompany = async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 };
-
 
 // COMPANY ADMIN: Create COMPANY USER (Same Company)
 exports.createCompanyUser = async (req, res) => {
@@ -332,7 +322,7 @@ exports.loginUser = async (req, res) => {
 
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { tenant: { select: { name: true } } },
+      include: { tenant: { select: { name: true, logo: true } } },
     });
 
     if (!user || !user.password) {
@@ -350,7 +340,7 @@ exports.loginUser = async (req, res) => {
     const token = jwt.sign(
       { id: user.id, tenantId: user.tenantId, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: "7d" }
+      { expiresIn: "7d" },
     );
 
     res.json({
@@ -363,6 +353,7 @@ exports.loginUser = async (req, res) => {
         role: user.role,
         tenantId: user.tenantId,
         company: user.tenant?.name || null,
+        companyLogo: user.tenant?.logo || null,
       },
     });
   } catch (err) {
@@ -370,12 +361,3 @@ exports.loginUser = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
-
-
-
-
-
-
-
-

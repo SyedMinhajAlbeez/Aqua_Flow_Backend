@@ -186,12 +186,13 @@ exports.editUpcomingOrder = async (req, res) => {
   }
 };
 
-// GET CUSTOMER'S UPCOMING RECURRING ORDERS
+// // GET CUSTOMER'S UPCOMING RECURRING ORDERS
 exports.getUpcomingRecurringOrders = async (req, res) => {
   try {
     const customerId = req.user.id;
     const tenantId = req.derivedTenantId;
 
+     
     const upcomingOrders = await prisma.order.findMany({
       where: {
         customerId,
@@ -260,7 +261,150 @@ exports.getUpcomingRecurringOrders = async (req, res) => {
     res.status(500).json({ error: "Failed to fetch upcoming orders" });
   }
 };
+// exports.getUpcomingRecurringOrders = async (req, res) => {
+//   try {
+//     const customerId = req.user.id;
+//     const tenantId = req.derivedTenantId;
 
+//     // ── DEBUG: Capture current time and auth context ────────────────────────
+//     const serverNow = new Date();
+
+//     // Main query (status filter still active, date filter removed)
+//     const upcomingOrders = await prisma.order.findMany({
+//       where: {
+//         customerId,
+//         tenantId,
+//         isRecurring: true,
+//         status: {
+//           in: ["pending", "confirmed", "assigned"],
+//         },
+//       },
+//       include: {
+//         items: {
+//           include: {
+//             product: true,
+//           },
+//         },
+//         subscription: true,
+//       },
+//       orderBy: { deliveryDate: "asc" },
+//     });
+
+//     // ── DEBUG QUERIES ───────────────────────────────────────────────────────
+//     const debug = {
+//       requestedBy: {
+//         customerId,
+//         tenantId,
+//       },
+//       serverTime: {
+//         utc: serverNow.toISOString(),
+//         ptk: serverNow.toLocaleString("en-US", { timeZone: "Asia/Karachi" }),
+//       },
+//       queryFiltersApplied: {
+//         isRecurring: true,
+//         statusIn: ["pending", "confirmed", "assigned"],
+//         // deliveryDate filter is currently removed
+//       },
+//       foundInMainQuery: upcomingOrders.length,
+
+//       // How many recurring orders exist at all (no status/date filter)
+//       totalRecurringAnyStatus: await prisma.order.count({
+//         where: {
+//           customerId,
+//           tenantId,
+//           isRecurring: true,
+//         },
+//       }),
+
+//       // All recurring orders with minimal fields (latest first)
+//       allRecurringOrdersSample: await prisma.order.findMany({
+//         where: {
+//           customerId,
+//           tenantId,
+//           isRecurring: true,
+//         },
+//         select: {
+//           id: true,
+//           orderNumberDisplay: true,
+//           deliveryDate: true,
+//           status: true,
+//           isRecurring: true,
+//           recurrence: true,
+//           nextRecurringDate: true,
+//           subscriptionId: true,
+//           createdAt: true,
+//         },
+//         orderBy: { createdAt: "desc" },
+//         take: 5, // limit to recent ones
+//       }),
+
+//       // Status distribution of recurring orders
+//       recurringByStatus: await prisma.order.groupBy({
+//         by: ["status"],
+//         where: {
+//           customerId,
+//           tenantId,
+//           isRecurring: true,
+//         },
+//         _count: {
+//           status: true,
+//         },
+//       }),
+//     };
+
+//     console.log("GET UPCOMING RECURRING DEBUG:", JSON.stringify(debug, null, 2));
+
+//     // Format response (same as before)
+//     const formatted = upcomingOrders.map((order) => ({
+//       id: order.id,
+//       orderNumber: order.orderNumberDisplay,
+//       deliveryDate: order.deliveryDate,
+//       status: order.status,
+//       items: order.items.map((item) => ({
+//         product: item.product.name,
+//         quantity: item.quantity,
+//         price: item.product.price,
+//         total: item.totalPrice,
+//       })),
+//       subscription: order.subscription
+//         ? {
+//             recurrence: order.subscription.recurrence,
+//             nextDelivery: order.subscription.nextDeliveryDate,
+//             totalDeliveries: order.subscription.totalDeliveries,
+//           }
+//         : null,
+//       canEdit: (() => {
+//         const deliveryDay = new Date(order.deliveryDate);
+//         const deadline = new Date(deliveryDay);
+//         deadline.setDate(deadline.getDate() - 1);
+//         deadline.setHours(18, 0, 0, 0);
+//         return new Date() < deadline;
+//       })(),
+//       editDeadline: (() => {
+//         const deliveryDay = new Date(order.deliveryDate);
+//         const deadline = new Date(deliveryDay);
+//         deadline.setDate(deadline.getDate() - 1);
+//         deadline.setHours(18, 0, 0, 0);
+//         return deadline;
+//       })(),
+//     }));
+
+//     // Return both normal data + debug (you can remove debug later)
+//     res.json({
+//       success: true,
+//       debug: debug,
+//       orders: formatted,
+//       total: formatted.length,
+//     });
+//   } catch (err) {
+//     console.error("Get Upcoming Orders Error:", err);
+//     res.status(500).json({ 
+//       success: false,
+//       error: "Failed to fetch upcoming orders",
+//       details: err.message 
+//     });
+//   }
+// };
 // PAUSE/RESUME SUBSCRIPTION
 exports.toggleSubscription = async (req, res) => {
   try {
