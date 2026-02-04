@@ -852,7 +852,7 @@ cron.schedule("0 2 1 * *", async () => {
 
           totalGenerated++;
           console.log(
-            `Created payment ${payment.paymentNumber} for ${subscription.customer.name}: ₹${totalAmount}`
+            `Created payment ${payment.paymentNumber} for ${subscription.customer.name}: Rs${totalAmount}`
           );
         }
 
@@ -932,21 +932,21 @@ cron.schedule("0 10 * * *", async () => {
 
         if (daysUntilDue === 0) {
           title = "Payment Due Today";
-          message = `📅 Payment Due Today: ₹${
+          message = `📅 Payment Due Today: Rs${
             payment.pendingAmount
           } for your monthly ${
             payment.subscription?.product?.name || "subscription"
           } is due today.`;
         } else if (daysUntilDue === 1) {
           title = "Payment Due Tomorrow";
-          message = `📅 Payment Due Tomorrow: ₹${
+          message = `📅 Payment Due Tomorrow: Rs${
             payment.pendingAmount
           } for your monthly ${
             payment.subscription?.product?.name || "subscription"
           } is due tomorrow.`;
         } else {
           title = "Payment Due Soon";
-          message = `📅 Payment Due in ${daysUntilDue} days: ₹${
+          message = `📅 Payment Due in ${daysUntilDue} days: Rs${
             payment.pendingAmount
           } for your monthly ${
             payment.subscription?.product?.name || "subscription"
@@ -1041,7 +1041,7 @@ cron.schedule("0 12 * * *", async () => {
           if (payment.customer) {
             await sendPushNotification(payment.customer.id, {
               title: "Payment Overdue",
-              body: `⚠️ Your payment of ₹${payment.pendingAmount} is overdue. Please pay as soon as possible.`,
+              body: `⚠️ Your payment of Rs${payment.pendingAmount} is overdue. Please pay as soon as possible.`,
               data: {
                 paymentId: payment.id,
                 type: "PAYMENT_OVERDUE",
@@ -1130,84 +1130,84 @@ Schedule:
 // TEMP: Force-run recurring order creation NOW – for testing
 // Remove or comment out after testing
 // ────────────────────────────────────────────────────────────────
-(async () => {
-  console.log("═══════════════════════════════════════════════");
-  console.log("FORCE-RUNNING recurring order creation at", new Date().toLocaleString("en-PK"));
-  console.log("═══════════════════════════════════════════════");
+// (async () => {
+//   console.log("═══════════════════════════════════════════════");
+//   console.log("FORCE-RUNNING recurring order creation at", new Date().toLocaleString("en-PK"));
+//   console.log("═══════════════════════════════════════════════");
 
-  try {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
+//   try {
+//     const tomorrow = new Date();
+//     tomorrow.setDate(tomorrow.getDate() + 1);
+//     tomorrow.setHours(0, 0, 0, 0);
 
-    const nextWeek = new Date();
-    nextWeek.setDate(nextWeek.getDate() + 7);
-    nextWeek.setHours(0, 0, 0, 0);
+//     const nextWeek = new Date();
+//     nextWeek.setDate(nextWeek.getDate() + 7);
+//     nextWeek.setHours(0, 0, 0, 0);
 
-    // ── Copy-paste or extract the full logic from your 3 AM cron here ──
-    const subscriptions = await prisma.subscription.findMany({
-      where: {
-        status: "ACTIVE",
-        nextDeliveryDate: {
-          gte: tomorrow,
-          lte: nextWeek,
-        },
-      },
-      include: {
-        customer: {
-          include: {
-            orders: {
-              where: {
-                status: { in: ["completed", "delivered"] },
-                subscriptionId: { not: null },
-              },
-              orderBy: { createdAt: "desc" },
-              take: 1,
-            },
-          },
-        },
-        product: true,
-        orders: {
-          where: {
-            deliveryDate: {
-              gte: tomorrow,
-              lte: nextWeek,
-            },
-          },
-        },
-      },
-    });
+//     // ── Copy-paste or extract the full logic from your 3 AM cron here ──
+//     const subscriptions = await prisma.subscription.findMany({
+//       where: {
+//         status: "ACTIVE",
+//         nextDeliveryDate: {
+//           gte: tomorrow,
+//           lte: nextWeek,
+//         },
+//       },
+//       include: {
+//         customer: {
+//           include: {
+//             orders: {
+//               where: {
+//                 status: { in: ["completed", "delivered"] },
+//                 subscriptionId: { not: null },
+//               },
+//               orderBy: { createdAt: "desc" },
+//               take: 1,
+//             },
+//           },
+//         },
+//         product: true,
+//         orders: {
+//           where: {
+//             deliveryDate: {
+//               gte: tomorrow,
+//               lte: nextWeek,
+//             },
+//           },
+//         },
+//       },
+//     });
 
-    console.log(`Found ${subscriptions.length} subscriptions eligible right now`);
+//     console.log(`Found ${subscriptions.length} subscriptions eligible right now`);
 
-    let created = 0;
-    let skipped = 0;
+//     let created = 0;
+//     let skipped = 0;
 
-    for (const sub of subscriptions) {
-      console.log(`Processing sub ${sub.id} → next: ${sub.nextDeliveryDate.toISOString()}`);
+//     for (const sub of subscriptions) {
+//       console.log(`Processing sub ${sub.id} → next: ${sub.nextDeliveryDate.toISOString()}`);
 
-      const existingOrder = sub.orders.find(
-        (o) => o.deliveryDate.toDateString() === sub.nextDeliveryDate.toDateString()
-      );
+//       const existingOrder = sub.orders.find(
+//         (o) => o.deliveryDate.toDateString() === sub.nextDeliveryDate.toDateString()
+//       );
 
-      if (existingOrder) {
-        console.log(`  → skipped (order already exists)`);
-        skipped++;
-        continue;
-      }
+//       if (existingOrder) {
+//         console.log(`  → skipped (order already exists)`);
+//         skipped++;
+//         continue;
+//       }
 
-      // ... rest of your loop logic: stock checks, withBottles calculation, transaction, etc. ...
-      // (paste the full body here – I shortened it for brevity)
+//       // ... rest of your loop logic: stock checks, withBottles calculation, transaction, etc. ...
+//       // (paste the full body here – I shortened it for brevity)
 
-      // At the end of successful creation:
-      created++;
-      console.log(`  → CREATED order for ${sub.nextDeliveryDate.toISOString()}`);
-    }
+//       // At the end of successful creation:
+//       created++;
+//       console.log(`  → CREATED order for ${sub.nextDeliveryDate.toISOString()}`);
+//     }
 
-    console.log(`Force-run finished: created ${created}, skipped ${skipped}`);
-  } catch (err) {
-    console.error("Force-run failed:", err);
-  }
-})();
+//     console.log(`Force-run finished: created ${created}, skipped ${skipped}`);
+//   } catch (err) {
+//     console.error("Force-run failed:", err);
+//   }
+// })();
 
 module.exports = cron;

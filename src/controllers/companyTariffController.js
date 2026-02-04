@@ -134,6 +134,7 @@ exports.assignTariff = async (req, res) => {
         assignedBy: req.user.id,
         isActive: true,
         assignedAt: new Date(),
+        effectiveFrom: new Date(new Date().setHours(0, 0, 0, 0)),  // midnight today
       },
     });
 

@@ -20,6 +20,8 @@ model User {
   address            String?
   logo               String?
   otp                String?
+  isActive           Boolean            @default(true) // ✅ ADD THIS
+
   phone              String?
   role               UserRole           @default(company_admin)
   drivers            Driver[]
@@ -246,6 +248,7 @@ model Customer {
   country          String?
   postalCode       String?
   zoneId           String?
+  fcmToken         String?
   status           CustomerStatus    @default(active)
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   zone             Zone?             @relation(fields: [zoneId], references: [id])
@@ -278,6 +281,7 @@ model Driver {
   totalRatings     Int               @default(0)
   vehicleNumber    String
   vehicleType      String
+  fcmToken         String?
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   user             User?             @relation(fields: [userId], references: [id])
   zone             Zone              @relation(fields: [zoneId], references: [id])
@@ -352,6 +356,11 @@ model Order {
   withBottles             Boolean           @default(true)
   paidAmount              Float             @default(0)
   paymentId               String?
+  isException             Boolean           @default(false)
+  exceptionType           String?
+  originalQuantity        Int?
+  overrideQuantity        Int?
+  exceptionNotes          String?
   paymentStatus           PaymentStatus     @default(PENDING)
   items                   OrderItem[]
   createdBy               User?             @relation(fields: [createdById], references: [id])
@@ -513,7 +522,7 @@ enum OrderStatus {
   cancelled
   failed
   assigned
-  // scheduled
+  scheduled
 }
 
 enum PaymentMethod {

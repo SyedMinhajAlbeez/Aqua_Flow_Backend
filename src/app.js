@@ -6,7 +6,7 @@ require("dotenv").config();
 
 const apiRoutes = require("./routes");
 const errorHandler = require("./utils/errorHandler");
-
+const testSubscriptionJoinRoutes = require("./tests/testSubscriptionJoin"); // ADD THIS
 try {
   require("./cronJobs/initCronJobs");
   console.log("⏰ Cron Jobs Scheduled");
@@ -26,6 +26,9 @@ app.use("/images", express.static(path.join(__dirname, "../public/images")));
 
 // API Routes
 app.use("/api", apiRoutes);
+
+
+app.use("/test", testSubscriptionJoinRoutes); // ADD THIS
 
 // Error Handler
 app.use(errorHandler);

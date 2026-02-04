@@ -4,7 +4,7 @@ const express = require("express");
 const { protect } = require("../middleware/authMiddleware");
 const tenantMiddleware = require("../middleware/tenantMiddleware");
 const upload = require("../middleware/upload");
-const { createCompany } = require("../controllers/authController");
+const { createCompany,changePassword } = require("../controllers/authController");
 const router = express.Router();
 
 // {
@@ -17,5 +17,7 @@ const router = express.Router();
 // }
 
 router.post("/create", protect, tenantMiddleware, upload, createCompany);
+router.post("/change-password", protect, changePassword);
+
 
 module.exports = router;

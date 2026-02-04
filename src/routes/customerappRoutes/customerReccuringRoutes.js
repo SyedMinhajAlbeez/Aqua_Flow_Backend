@@ -10,7 +10,7 @@ const {
 // Clean routes
 router.get("/recurring/upcoming", getUpcomingRecurringOrders);
 router.put("/recurring/edit/:orderId", editUpcomingOrder);
-router.patch(
+router.put(
   "/recurring/subscription/:subscriptionId/toggle",
   toggleSubscription
 );

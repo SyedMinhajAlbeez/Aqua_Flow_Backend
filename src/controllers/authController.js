@@ -286,7 +286,7 @@ exports.createCompany = async (req, res) => {
 // COMPANY ADMIN: Create COMPANY USER (Same Company)
 exports.createCompanyUser = async (req, res) => {
   try {
-    const { name, email, password, phone, role = "company_user" } = req.body;
+    const { name, email, password, phone, role = "company_user", } = req.body;
     const tenantId = req.derivedTenantId;
 
     if (!tenantId)
@@ -305,6 +305,7 @@ exports.createCompanyUser = async (req, res) => {
         role, // "company_user" or "company_admin"
         phone,
         tenantId,
+        isActive:true,
       },
     });
 
@@ -322,15 +323,53 @@ exports.loginUser = async (req, res) => {
 
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { tenant: { select: { name: true, logo: true } } },
+      include: { tenant: { select: { name: true, logo: true, status: true } } },
     });
 
+    
+if (!user) {
+  console.log('User not found for email:', email);
+  return res.status(400).json({ message: "Invalid credentials" });
+}
+
+// Now safe to log user details
+console.log(`Logging in user: ${user.email}`);
+// console.log('Tenant ID:', user.tenantId);
+console.log('Tenant status:', user.tenant?.status);
+console.log('Tenant object:', user.tenant);
+
+console.log('Tenant ID:', user.tenantId);
+    
     if (!user || !user.password) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
+    // ✅ Check if user is active
+    if (!user.isActive) {
+      return res.status(403).json({
+        message: "User is inactive. Please contact your admin.",
+      });
+    }
+    
+// Check if company (tenant) is active by status field
+// if (user.tenant?.status !== "active") {
+//   return res.status(403).json({
+//     message: "Company is inactive. Please contact your admin.",
+//   });
+// }
+// Only check tenant status if tenantId exists (skip super admins)
+if (user.tenantId) {
+  if (!user.tenant || user.tenant.status !== "active") {
+    return res.status(403).json({
+      message: "Company is inactive. Please contact your admin.",
+    });
+  }
+}
+
+
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: "Invalid password" });
+    if (!isMatch)
+      return res.status(400).json({ message: "Invalid password" });
 
     await prisma.user.update({
       where: { id: user.id },
@@ -352,6 +391,8 @@ exports.loginUser = async (req, res) => {
         email: user.email,
         role: user.role,
         tenantId: user.tenantId,
+        status: user.tenant?.status || null,
+        isActive: user.isActive || null,
         company: user.tenant?.name || null,
         companyLogo: user.tenant?.logo || null,
       },
@@ -361,3 +402,77 @@ exports.loginUser = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    // 1️⃣ Required fields
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        message: "Current password and new password are required",
+      });
+    }
+
+    // 2️⃣ Minimum length
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        message: "New password must be at least 6 characters long",
+      });
+    }
+
+    // 3️⃣ Prevent same password
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        message: "New password must be different from current password",
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // 4️⃣ Verify current password
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+
+    if (!isMatch) {
+      return res.status(401).json({
+        message: "Current password is incorrect",
+      });
+    }
+
+    // 5️⃣ Extra safety (hash-level comparison)
+    const isSameAsOld = await bcrypt.compare(newPassword, user.password);
+    if (isSameAsOld) {
+      return res.status(400).json({
+        message: "New password must be different from previous password",
+      });
+    }
+
+    // 6️⃣ Update password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        passwordChangedAt: new Date(), // optional
+      },
+    });
+
+    return res.status(200).json({
+      message: "Password updated successfully",
+    });
+  } catch (err) {
+    console.error("🔥 Change Password Error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+

@@ -1,5 +1,6 @@
 // paymentController.js
 const prisma = require("../prisma/client");
+const { notifyOrderStatusChange, notifyPaymentCollected, notifyPaymentCollectedToCustomer } = require("../../src/utils/notificationService");
 
 // CREATE IMMEDIATE PAYMENT FOR NON-RECURRING ORDER
 exports.createImmediatePayment = async (orderId) => {
@@ -210,7 +211,7 @@ exports.collectPayment = async (req, res) => {
 
     // Define allowable over-collection buffer
     // You can adjust this value based on your currency/business needs
-    const OVER_COLLECTION_BUFFER = 100; // e.g., allow up to ₹100 extra (for change issues)
+    const OVER_COLLECTION_BUFFER = 100; // e.g., allow up to Rs100 extra (for change issues)
 
     const maxAllowable = payment.pendingAmount + OVER_COLLECTION_BUFFER;
 
@@ -279,9 +280,42 @@ exports.collectPayment = async (req, res) => {
       },
     });
 
+    // ────────────────────────────────────────────────────────────────
+    // Notify CUSTOMER about payment collection
+    // ────────────────────────────────────────────────────────────────
+    try {
+      const paymentDetails = {
+        paymentId,
+        amount: collectedAmountNum,
+        orderNumber: payment.order?.orderNumberDisplay || "N/A",
+        status: newStatus,
+        customerName: payment.customer?.name || "Customer",
+        orderId: payment.orderId || null,
+      };
+
+      console.log(
+        "[AUTO-PAYMENT] Sending 'payment collected' notification to customer",
+        payment.customer?.name || payment.customer?.phone || payment.customerId || "?"
+      );
+
+      const notifyResult = await notifyPaymentCollectedToCustomer(
+        payment.customerId,           // ← from payment.customerId
+        paymentDetails
+      );
+
+      console.log("[AUTO-PAYMENT] Customer notification result:", {
+        success: notifyResult.success,
+        mock: notifyResult.mock || false,
+        messageId: notifyResult.messageId || "N/A",
+      });
+    } catch (notifyErr) {
+      console.error("[AUTO-PAYMENT] Customer notification failed:", notifyErr.message);
+      // Do not fail the response — payment was collected successfully
+    }
+
     res.json({
       success: true,
-      message: `Payment collected: Pkr${collectedAmountNum}${changeGiven > 0 ? ` (change returned: ₹${changeGiven})` : ''}`,
+      message: `Payment collected: Pkr${collectedAmountNum}${changeGiven > 0 ? ` (change returned: Rs${changeGiven})` : ''}`,
       payment: updatedPayment,
       receipt: {
         paymentNumber: payment.paymentNumber,
@@ -462,16 +496,16 @@ exports.getTodaysPayments = async (req, res) => {
         notes: payment.notes,
         orderInfo: payment.order
           ? {
-              orderNumber: payment.order.orderNumberDisplay,
-              deliveryDate: payment.order.deliveryDate,
-              withBottles: payment.order.withBottles,
-            }
+            orderNumber: payment.order.orderNumberDisplay,
+            deliveryDate: payment.order.deliveryDate,
+            withBottles: payment.order.withBottles,
+          }
           : null,
         subscriptionInfo: payment.subscription
           ? {
-              recurrence: payment.subscription.recurrence,
-              productName: payment.subscription.product?.name,
-            }
+            recurrence: payment.subscription.recurrence,
+            productName: payment.subscription.product?.name,
+          }
           : null,
       };
     });
@@ -489,7 +523,7 @@ exports.getTodaysPayments = async (req, res) => {
 
     // Debug info
     console.log(
-      `📊 Stats: ${formattedPayments.length} payments, ₹${totals.totalPending} pending, ${totals.overdueCount} overdue`
+      `📊 Stats: ${formattedPayments.length} payments, Rs${totals.totalPending} pending, ${totals.overdueCount} overdue`
     );
 
     // ✅ FIX: Use local date string in response
@@ -678,20 +712,20 @@ exports.getDriverCollectionHistory = async (req, res) => {
   try {
     const driverId = req.user.id;
     const tenantId = req.derivedTenantId;
-    
+
     // Pagination parameters
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
-    
+
     // Filter parameters
-    const { 
-      startDate, 
-      endDate, 
-      customerId, 
-      paymentMethod, 
+    const {
+      startDate,
+      endDate,
+      customerId,
+      paymentMethod,
       status,
-      search 
+      search
     } = req.query;
 
     // Base where clause
@@ -717,7 +751,7 @@ exports.getDriverCollectionHistory = async (req, res) => {
     if (customerId) where.customerId = customerId;
     if (paymentMethod) where.paymentMethod = paymentMethod;
     if (status) where.status = status;
-    
+
     // Search by customer name/phone or payment number
     if (search) {
       where.OR = [
@@ -795,7 +829,7 @@ exports.getDriverCollectionHistory = async (req, res) => {
     // Get daily collection summary for the last 7 days
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    
+
     const dailySummary = await prisma.customerPayment.groupBy({
       by: ['paymentDate'],
       where: {

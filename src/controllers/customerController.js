@@ -320,7 +320,8 @@ exports.getCustomers = async (req, res) => {
           { name: { contains: search, mode: "insensitive" } },
           { phone: { contains: search, mode: "insensitive" } },
           { email: { contains: search, mode: "insensitive" } },
-          {zone: {
+          {
+            zone: {
               name: { contains: search, mode: "insensitive" },
             },
           },
@@ -363,12 +364,12 @@ exports.getCustomers = async (req, res) => {
       prisma.customer.count({ where: { tenantId, status: "active" } }),
       prisma.customer.count({ where: { tenantId, status: "inactive" } }),
       // NEW: Count new customers (active ones created recently)
-      prisma.customer.count({ 
-        where: { 
-          tenantId, 
-          status: "active", 
-          createdAt: { gte: newThreshold } 
-        } 
+      prisma.customer.count({
+        where: {
+          tenantId,
+          status: "active",
+          createdAt: { gte: newThreshold }
+        }
       }),
     ]);
 
@@ -592,6 +593,7 @@ exports.updateCustomer = async (req, res) => {
     res.status(500).json({ error: "Failed to update customer" });
   }
 };
+
 
 // TOGGLE STATUS (same)
 exports.toggleStatus = async (req, res) => {

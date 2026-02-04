@@ -1,7 +1,9 @@
 const prisma = require("../../prisma/client");
 const { sendOTP, verifyOTP } = require("../../utils/otpService");
 const jwt = require("jsonwebtoken");
-
+// const notifyOrderStatusChange = require("../../utils/notificationService");
+const { notifyOrderStatusChange } = require("../../utils/notificationService");
+const notificationService = require("../../utils/notificationService");
 // ✅ NEW: DRIVER KE COMPLETED ORDERS HISTORY WITH PAGINATION
 exports.getMyCompletedOrders = async (req, res) => {
   try {
@@ -101,6 +103,200 @@ exports.getMyCompletedOrders = async (req, res) => {
 };
 
 // GET TODAY'S RECURRING ORDERS FOR DRIVER WITH PAGINATION
+// exports.getTodayRecurringOrders = async (req, res) => {
+//   try {
+//     if (req.user.role !== "driver") {
+//       return res.status(403).json({ error: "Only drivers can access this" });
+//     }
+
+//     const driverId = req.user.id;
+//     const tenantId = req.derivedTenantId;
+//     const today = new Date();
+//     today.setHours(0, 0, 0, 0);
+
+//     const tomorrow = new Date(today);
+//     tomorrow.setDate(tomorrow.getDate() + 1);
+
+//     // ✅ PAGINATION PARAMETERS
+//     const page = parseInt(req.query.page) || 1;
+//     const limit = parseInt(req.query.limit) || 10;
+//     const skip = (page - 1) * limit;
+
+//     const driver = await prisma.driver.findUnique({
+//       where: { id: driverId },
+//       select: { zoneId: true },
+//     });
+
+//     if (!driver) {
+//       return res.status(404).json({ error: "Driver not found" });
+//     }
+
+//     // ✅ TOTAL COUNT FOR PAGINATION
+//     const totalOrders = await prisma.order.count({
+//       where: {
+//         tenantId,
+//         zoneId: driver.zoneId,
+//         deliveryDate: {
+//           gte: today,
+//           lt: tomorrow,
+//         },
+//         status: {
+//           in: ["pending", "in_progress", "delivered"],
+//         },
+//         isRecurring: true,
+//         subscriptionId: { not: null },
+//       },
+//     });
+
+//     const recurringOrders = await prisma.order.findMany({
+//       where: {
+//         tenantId,
+//         zoneId: driver.zoneId,
+//         deliveryDate: {
+//           gte: today,
+//           lt: tomorrow,
+//         },
+//         status: {
+//           in: ["pending", "in_progress", "delivered"],
+//         },
+//         isRecurring: true,
+//         subscriptionId: { not: null },
+//       },
+//       include: {
+//         customer: {
+//           select: {
+//             id: true,
+//             name: true,
+//             phone: true,
+//             address: true,
+//             empties: true,
+//           },
+//         },
+//         zone: { select: { name: true, id: true } },
+//         subscription: {
+//           include: {
+//             product: {
+//               select: {
+//                 name: true,
+//                 size: true,
+//               },
+//             },
+//           },
+//         },
+//         items: {
+//           include: {
+//             product: {
+//               select: {
+//                 name: true,
+//                 size: true,
+//                 isReusable: true,
+//                 requiresEmptyReturn: true,
+//               },
+//             },
+//           },
+//         },
+//       },
+//       orderBy: [
+//         { subscription: { preferredTime: "asc" } },
+//         { deliveryDate: "asc" },
+//       ],
+//       skip, // ✅ PAGINATION SKIP
+//       take: limit, // ✅ PAGINATION LIMIT
+//     });
+
+//     // ✅ CORRECT LOGIC NOW:
+//     const formatted = recurringOrders.map((order) => {
+//       const reusableItems = order.items.filter(
+//         (i) => i.product.isReusable && i.product.requiresEmptyReturn
+//       );
+
+//       let expectedEmpties = 0;
+
+//       if (order.withBottles === false) {
+//         // Refill order - collect empties from previous delivery
+//         expectedEmpties = reusableItems.reduce((sum, i) => sum + i.quantity, 0);
+//       } else {
+//         // First time with bottles - NO empties expected
+//         expectedEmpties = 0;
+//       }
+
+//       return {
+//         id: order.id,
+//         orderNumber: order.orderNumberDisplay,
+//         totalAmount: order.totalAmount,
+//         withBottles: order.withBottles,
+//         customer: {
+//           id: order.customer.id,
+//           name: order.customer.name,
+//           phone: order.customer.phone,
+//           address: order.customer.address,
+//           empties: order.customer.empties,
+//         },
+//         zone: {
+//           id: order.zone.id,
+//           name: order.zone.name,
+//         },
+//         subscription: order.subscription
+//           ? {
+//             id: order.subscription.id,
+//             recurrence: order.subscription.recurrence,
+//             preferredTime: order.subscription.preferredTime,
+//             totalDeliveries: order.subscription.totalDeliveries,
+//           }
+//           : null,
+//         items: order.items.map((item) => ({
+//           product: item.product.name,
+//           size: item.product.size,
+//           quantity: item.quantity,
+//           isReusable: item.product.isReusable,
+//         })),
+//         status: order.status,
+//         deliveryDate: order.deliveryDate,
+//         isRecurring: true,
+//         expectedEmpties, // ✅ Now correct: 0 for first-time, actual for refill
+//         note:
+//           order.status === "delivered"
+//             ? `🔄 Delivered - ${expectedEmpties > 0
+//               ? `Collect ${expectedEmpties} empties!`
+//               : "First time delivery - no empties expected"
+//             }`
+//             : `🔁 ${order.withBottles
+//               ? "First time with bottles"
+//               : `Refill order - ${expectedEmpties} empties to collect`
+//             } - Delivery Pending`,
+//       };
+//     });
+
+//     res.json({
+//       success: true,
+//       message: `You have ${formatted.length} recurring tasks today`,
+//       today: today.toISOString().split("T")[0],
+//       pagination: {
+//         currentPage: page,
+//         totalPages: Math.ceil(totalOrders / limit),
+//         totalItems: totalOrders,
+//         itemsPerPage: limit,
+//         hasNextPage: page < Math.ceil(totalOrders / limit),
+//         hasPreviousPage: page > 1,
+//       },
+//       orders: formatted,
+//       stats: {
+//         total: formatted.length,
+//         pending: formatted.filter((o) => o.status === "pending").length,
+//         inProgress: formatted.filter((o) => o.status === "in_progress").length,
+//         delivered: formatted.filter((o) => o.status === "delivered").length,
+//         withBottles: formatted.filter((o) => o.withBottles).length,
+//         refillOrders: formatted.filter((o) => !o.withBottles).length,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("Get Today Recurring Orders Error:", err);
+//     res.status(500).json({ error: "Failed to fetch recurring orders" });
+//   }
+// };
+
+
+// GET TODAY'S RECURRING ORDERS FOR DRIVER WITH PAGINATION
 exports.getTodayRecurringOrders = async (req, res) => {
   try {
     if (req.user.role !== "driver") {
@@ -115,11 +311,12 @@ exports.getTodayRecurringOrders = async (req, res) => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    // ✅ PAGINATION PARAMETERS
+    // PAGINATION PARAMETERS
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
+    // Driver ka zone check karo (future mein use kar sakte ho agar chaho)
     const driver = await prisma.driver.findUnique({
       where: { id: driverId },
       select: { zoneId: true },
@@ -129,11 +326,11 @@ exports.getTodayRecurringOrders = async (req, res) => {
       return res.status(404).json({ error: "Driver not found" });
     }
 
-    // ✅ TOTAL COUNT FOR PAGINATION
+    // TOTAL COUNT FOR PAGINATION - ZONE FILTER HATA DIYA
     const totalOrders = await prisma.order.count({
       where: {
         tenantId,
-        zoneId: driver.zoneId,
+        // zoneId: driver.zoneId,   ← Yeh comment out / remove kiya
         deliveryDate: {
           gte: today,
           lt: tomorrow,
@@ -146,10 +343,11 @@ exports.getTodayRecurringOrders = async (req, res) => {
       },
     });
 
+    // FIND MANY - ZONE FILTER HATA DIYA
     const recurringOrders = await prisma.order.findMany({
       where: {
         tenantId,
-        zoneId: driver.zoneId,
+        // zoneId: driver.zoneId,   ← Yeh bhi hata diya
         deliveryDate: {
           gte: today,
           lt: tomorrow,
@@ -198,11 +396,11 @@ exports.getTodayRecurringOrders = async (req, res) => {
         { subscription: { preferredTime: "asc" } },
         { deliveryDate: "asc" },
       ],
-      skip, // ✅ PAGINATION SKIP
-      take: limit, // ✅ PAGINATION LIMIT
+      skip,
+      take: limit,
     });
 
-    // ✅ CORRECT LOGIC NOW:
+    // Baqi formatting same rahegi (expectedEmpties, notes waghera)
     const formatted = recurringOrders.map((order) => {
       const reusableItems = order.items.filter(
         (i) => i.product.isReusable && i.product.requiresEmptyReturn
@@ -211,11 +409,7 @@ exports.getTodayRecurringOrders = async (req, res) => {
       let expectedEmpties = 0;
 
       if (order.withBottles === false) {
-        // Refill order - collect empties from previous delivery
         expectedEmpties = reusableItems.reduce((sum, i) => sum + i.quantity, 0);
-      } else {
-        // First time with bottles - NO empties expected
-        expectedEmpties = 0;
       }
 
       return {
@@ -230,10 +424,12 @@ exports.getTodayRecurringOrders = async (req, res) => {
           address: order.customer.address,
           empties: order.customer.empties,
         },
-        zone: {
-          id: order.zone.id,
-          name: order.zone.name,
-        },
+        zone: order.zone
+          ? {
+            id: order.zone.id,
+            name: order.zone.name,
+          }
+          : { id: null, name: "Unassigned Zone" },   // ← Helpful message
         subscription: order.subscription
           ? {
             id: order.subscription.id,
@@ -251,7 +447,7 @@ exports.getTodayRecurringOrders = async (req, res) => {
         status: order.status,
         deliveryDate: order.deliveryDate,
         isRecurring: true,
-        expectedEmpties, // ✅ Now correct: 0 for first-time, actual for refill
+        expectedEmpties,
         note:
           order.status === "delivered"
             ? `🔄 Delivered - ${expectedEmpties > 0
@@ -292,7 +488,6 @@ exports.getTodayRecurringOrders = async (req, res) => {
     res.status(500).json({ error: "Failed to fetch recurring orders" });
   }
 };
-
 // COMPLETE ORDER WITH EMPTIES - CORRECTED VERSION
 exports.completeOrderWithEmpties = async (req, res) => {
   try {
@@ -477,7 +672,6 @@ exports.completeOrderWithEmpties = async (req, res) => {
           where: { id },
           data: { status: "completed" },
         });
-
         // 5. Update next delivery date for recurring
         if (order.isRecurring && order.subscriptionId) {
           const currentDate = new Date(order.deliveryDate);
@@ -587,6 +781,40 @@ exports.completeOrderWithEmpties = async (req, res) => {
       paymentInfo = payment;
     }
 
+    // ────────────────────────────────────────────────────────────────
+    // Notify CUSTOMER that the order is now completed
+    // ────────────────────────────────────────────────────────────────
+    try {
+      const statusDetails = {
+        orderId: id,
+        orderNumber:
+          // order.orderNumber ||
+          order.orderNumberDisplay ||
+          `ORD-${id.slice(0, 8)}`,
+        status: "completed",
+        driverName: req.user.name || "Driver",
+      };
+
+      console.log(
+        "[COMPLETE-ORDER] Sending 'completed' notification to customer",
+        order.customer?.name || order.customer?.phone || order.customerId || "?"
+      );
+
+      const notifyResult = await notificationService.notifyOrderStatusChangeToCustomer(
+        order.customerId,
+        statusDetails
+      );
+
+      console.log("[COMPLETE-ORDER] Customer notification result:", {
+        success: notifyResult.success,
+        mock: notifyResult.mock || false,
+        messageId: notifyResult.messageId || "N/A",
+      });
+    } catch (notifyErr) {
+      console.error("[COMPLETE-ORDER] Customer notification failed:", notifyErr.message);
+      // Do not throw — order completion must succeed
+    }
+
     res.json({
       success: true,
       message: order.withBottles
@@ -604,7 +832,7 @@ exports.completeOrderWithEmpties = async (req, res) => {
       paymentCreated,
       paymentInfo,
       paymentMessage: paymentCreated
-        ? `Immediate payment created. Amount: ₹${order.totalAmount}. Collect from customer.`
+        ? `Immediate payment created. Amount: Rs${order.totalAmount}. Collect from customer.`
         : "Recurring order - payment will be generated monthly",
     });
   } catch (err) {
@@ -916,6 +1144,156 @@ exports.getMyAssignedOrders = async (req, res) => {
   }
 };
 
+// ✅ DRIVER KO SIRF USKE ASSIGNED REGULAR (NON-RECURRING) ORDERS DIKHAO WITH PAGINATION
+// exports.getMyAssignedOrders = async (req, res) => {
+//   try {
+//     if (req.user.role !== "driver") {
+//       return res
+//         .status(403)
+//         .json({ error: "Only drivers can access their orders" });
+//     }
+
+//     const driverId = req.user.id;
+//     const tenantId = req.derivedTenantId;
+
+//     // ✅ PAGINATION PARAMETERS
+//     const page = parseInt(req.query.page) || 1;
+//     const limit = parseInt(req.query.limit) || 10;
+//     const skip = (page - 1) * limit;
+
+//     // ✅ TOTAL COUNT FOR PAGINATION - NON-RECURRING ONLY
+//     const totalOrders = await prisma.order.count({
+//       where: {
+//         driverId,
+//         tenantId,
+//         status: {
+//           in: ["pending", "in_progress", "out_for_delivery", "delivered"],
+//         },
+//         isRecurring: false, // ✅ ONLY NON-RECURRING ORDERS
+//       },
+//     });
+
+//     const orders = await prisma.order.findMany({
+//       where: {
+//         driverId,
+//         tenantId,
+//         status: {
+//           in: ["pending", "in_progress", "out_for_delivery", "delivered"],
+//         },
+//         isRecurring: false, // ✅ ONLY NON-RECURRING ORDERS
+//       },
+//       include: {
+//         customer: {
+//           select: {
+//             name: true,
+//             phone: true,
+//             address: true,
+//             empties: true,
+//           },
+//         },
+//         zone: { select: { name: true } },
+//         items: {
+//           include: {
+//             product: {
+//               select: {
+//                 name: true,
+//                 size: true,
+//                 isReusable: true,
+//                 requiresEmptyReturn: true,
+//               },
+//             },
+//           },
+//         },
+//       },
+//       orderBy: [
+//         { status: "asc" },
+//         { deliveryDate: "asc" },
+//         { createdAt: "desc" },
+//       ],
+//       skip, // ✅ PAGINATION SKIP
+//       take: limit, // ✅ PAGINATION LIMIT
+//     });
+
+//     const today = new Date().toDateString();
+//     const stats = {
+//       totalToday: orders.filter(
+//         (o) => new Date(o.deliveryDate).toDateString() === today
+//       ).length,
+//       pending: orders.filter((o) => o.status === "pending").length,
+//       inProgress: orders.filter((o) => o.status === "in_progress").length,
+//       outForDelivery: orders.filter((o) => o.status === "out_for_delivery")
+//         .length,
+//       deliveredToday: orders.filter(
+//         (o) =>
+//           o.status === "delivered" &&
+//           new Date(o.deliveryDate).toDateString() === today
+//       ).length,
+//     };
+
+//     // ✅ CORRECT LOGIC FOR REGULAR ORDERS ONLY
+//     const ordersWithEmpties = orders.map((order) => {
+//       const reusableItems = order.items.filter(
+//         (i) => i.product.isReusable && i.product.requiresEmptyReturn
+//       );
+
+//       let expectedEmpties = 0;
+
+//       if (order.withBottles === false) {
+//         // Refill order
+//         expectedEmpties = reusableItems.reduce((sum, i) => sum + i.quantity, 0);
+//       } else {
+//         // First time order - NO empties
+//         expectedEmpties = 0;
+//       }
+
+//       return {
+//         id: order.id,
+//         orderNumber: order.orderNumberDisplay,
+//         totalAmount: order.totalAmount,
+//         withBottles: order.withBottles,
+//         customer: {
+//           name: order.customer.name,
+//           phone: order.customer.phone,
+//           address: order.customer.address,
+//           empties: order.customer.empties,
+//         },
+//         zone: order.zone?.name || "Unzoned",
+//         items: order.items.map((item) => ({
+//           product: item.product.name,
+//           size: item.product.size,
+//           quantity: item.quantity,
+//           isReusable: item.product.isReusable,
+//         })),
+//         status: order.status,
+//         deliveryDate: order.deliveryDate,
+//         isRecurring: false, // ✅ Explicitly false
+//         expectedEmpties,
+//         customerEmpties: order.customer.empties,
+//         createdAt: order.createdAt,
+//         updatedAt: order.updatedAt,
+//       };
+//     });
+
+//     res.json({
+//       success: true,
+//       message: "Your assigned regular orders (non-recurring only)",
+//       stats,
+//       pagination: {
+//         currentPage: page,
+//         totalPages: Math.ceil(totalOrders / limit),
+//         totalItems: totalOrders,
+//         itemsPerPage: limit,
+//         hasNextPage: page < Math.ceil(totalOrders / limit),
+//         hasPreviousPage: page > 1,
+//       },
+//       orders: ordersWithEmpties,
+//     });
+//   } catch (err) {
+//     console.error("Get My Orders Error:", err);
+//     res.status(500).json({ error: "Failed to fetch your orders" });
+//   }
+// };
+
 // MARK ORDER AS OUT FOR DELIVERY
 exports.markOutForDelivery = async (req, res) => {
   try {
@@ -950,6 +1328,38 @@ exports.markOutForDelivery = async (req, res) => {
         customer: { select: { name: true, phone: true } },
       },
     });
+
+    try {
+      const statusDetails = {
+        orderId: updatedOrder.id,
+        orderNumber:
+          // updatedOrder.orderNumber ||
+          updatedOrder.orderNumberDisplay ||
+          `ORD-${id.slice(0, 8)}`,
+        status: "out_for_delivery",
+        driverName: req.user.name || "Driver",   // ← take from authenticated driver
+      };
+
+      console.log(
+        "[AUTO-NOTIFY-CUSTOMER] Sending 'out for delivery' to customer",
+        updatedOrder.customer?.name || updatedOrder.customer?.phone || "?"
+      );
+
+      // This is the function you already showed earlier
+      const notifyResult = await notificationService.notifyOrderStatusChangeToCustomer(
+        updatedOrder.customerId,          // you need customerId here
+        statusDetails
+      );
+
+      console.log("[AUTO-NOTIFY-CUSTOMER] Result:", {
+        success: notifyResult.success,
+        mock: notifyResult.mock,
+        messageId: notifyResult.messageId || "N/A",
+      });
+    } catch (notifyErr) {
+      console.error("[AUTO-NOTIFY-CUSTOMER] Failed:", notifyErr.message);
+      // still do NOT fail the whole request
+    }
 
     res.json({
       success: true,
@@ -1045,6 +1455,27 @@ exports.markAsDelivered = async (req, res) => {
       },
     });
 
+    // ────────────────────────────────────────────────────────────────
+    // ADD NOTIFICATION HERE — right after update succeeds
+    // ────────────────────────────────────────────────────────────────
+    try {
+      const statusDetails = {
+        orderId: updatedOrder.id,
+        orderNumber:
+          // updatedOrder.orderNumber ||
+          updatedOrder.orderNumberDisplay ||
+          `ORD-${id.slice(0, 8)}`,
+        status: "delivered",
+        driverName: req.user.name || "Driver",
+      };
+
+      await notificationService.notifyOrderStatusChangeToCustomer(
+        order.customerId,   // ← from the findFirst result — guaranteed to exist
+        statusDetails
+      );
+    } catch (notifyErr) {
+      console.error("[AUTO-DELIVERED] Customer notification failed:", notifyErr);
+    }
     res.json({
       success: true,
       message: `Order delivered! ${totalExpectedEmpties > 0

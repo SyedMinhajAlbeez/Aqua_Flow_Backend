@@ -298,8 +298,8 @@ cron.schedule("0 23 28-31 * *", async () => {
               month: "long",
             })} ${today.getFullYear()}):\n` +
             `• Orders: ${report.orders.total}\n` +
-            `• Revenue: ₹${report.orders.revenue}\n` +
-            `• Payments Collected: ₹${report.payments.collected}\n` +
+            `• Revenue: Rs${report.orders.revenue}\n` +
+            `• Payments Collected: Rs${report.payments.collected}\n` +
             `• New Customers: ${report.customers.new}\n` +
             `• Collection Rate: ${report.summary.collectionRate}%`;
 

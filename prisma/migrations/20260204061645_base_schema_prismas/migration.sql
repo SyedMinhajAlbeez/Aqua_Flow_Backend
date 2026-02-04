@@ -1,8 +1,11 @@
 -- CreateEnum
+CREATE TYPE "InvoiceStatus" AS ENUM ('DRAFT', 'GENERATED', 'PAID');
+
+-- CreateEnum
 CREATE TYPE "UserRole" AS ENUM ('super_admin', 'company_admin', 'company_user');
 
 -- CreateEnum
-CREATE TYPE "OrderStatus" AS ENUM ('pending', 'confirmed', 'in_progress', 'out_for_delivery', 'delivered', 'completed', 'cancelled', 'failed', 'assigned');
+CREATE TYPE "OrderStatus" AS ENUM ('pending', 'confirmed', 'in_progress', 'out_for_delivery', 'delivered', 'completed', 'cancelled', 'failed', 'assigned', 'scheduled');
 
 -- CreateEnum
 CREATE TYPE "PaymentMethod" AS ENUM ('cash_on_delivery', 'card', 'wallet', 'bank_transfer');
@@ -22,6 +25,12 @@ CREATE TYPE "OrderRecurrence" AS ENUM ('NONE', 'WEEKLY', 'BI_WEEKLY', 'MONTHLY')
 -- CreateEnum
 CREATE TYPE "SubscriptionStatus" AS ENUM ('ACTIVE', 'PAUSED', 'CANCELLED', 'EXPIRED');
 
+-- CreateEnum
+CREATE TYPE "ProductType" AS ENUM ('REUSABLE', 'NON_REUSABLE');
+
+-- CreateEnum
+CREATE TYPE "BillingStatus" AS ENUM ('PAID', 'PARTIAL', 'UNPAID', 'OVERDUE', 'SUSPENDED');
+
 -- CreateTable
 CREATE TABLE "users" (
     "id" TEXT NOT NULL,
@@ -35,6 +44,7 @@ CREATE TABLE "users" (
     "address" TEXT,
     "logo" TEXT,
     "otp" TEXT,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
     "phone" TEXT,
     "role" "UserRole" NOT NULL DEFAULT 'company_admin',
 
@@ -77,10 +87,10 @@ CREATE TABLE "products" (
 );
 
 -- CreateTable
-CREATE TABLE "payments" (
+CREATE TABLE "customer_payments" (
     "id" TEXT NOT NULL,
     "paymentNumber" TEXT NOT NULL,
-    "customerId" TEXT NOT NULL,
+    "customerId" TEXT,
     "tenantId" TEXT NOT NULL,
     "orderId" TEXT,
     "subscriptionId" TEXT,
@@ -88,7 +98,7 @@ CREATE TABLE "payments" (
     "paidAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "pendingAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "collectionType" "PaymentCollectionType" NOT NULL DEFAULT 'IMMEDIATE',
-    "dueDate" TIMESTAMP(3) NOT NULL,
+    "dueDate" TIMESTAMP(3),
     "paymentDate" TIMESTAMP(3),
     "status" "PaymentStatus" NOT NULL DEFAULT 'PENDING',
     "paymentMethod" "PaymentMethod" NOT NULL DEFAULT 'cash_on_delivery',
@@ -101,7 +111,24 @@ CREATE TABLE "payments" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "payments_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "customer_payments_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "invoice_payments" (
+    "id" TEXT NOT NULL,
+    "invoiceId" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "amount" DOUBLE PRECISION NOT NULL,
+    "paidAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "paymentMethod" "PaymentMethod" NOT NULL DEFAULT 'bank_transfer',
+    "reference" TEXT,
+    "status" "PaymentStatus" NOT NULL DEFAULT 'PAID',
+    "notes" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "invoice_payments_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -184,6 +211,7 @@ CREATE TABLE "customers" (
     "country" TEXT,
     "postalCode" TEXT,
     "zoneId" TEXT,
+    "fcmToken" TEXT,
     "status" "CustomerStatus" NOT NULL DEFAULT 'active',
 
     CONSTRAINT "customers_pkey" PRIMARY KEY ("id")
@@ -206,6 +234,7 @@ CREATE TABLE "drivers" (
     "totalRatings" INTEGER NOT NULL DEFAULT 0,
     "vehicleNumber" TEXT NOT NULL,
     "vehicleType" TEXT NOT NULL,
+    "fcmToken" TEXT,
 
     CONSTRAINT "drivers_pkey" PRIMARY KEY ("id")
 );
@@ -236,7 +265,7 @@ CREATE TABLE "subscriptions" (
 CREATE TABLE "orders" (
     "id" TEXT NOT NULL,
     "orderNumber" SERIAL NOT NULL,
-    "orderNumberDisplay" TEXT NOT NULL,
+    "orderNumberDisplay" TEXT,
     "customerId" TEXT NOT NULL,
     "driverId" TEXT,
     "zoneId" TEXT NOT NULL,
@@ -259,6 +288,11 @@ CREATE TABLE "orders" (
     "withBottles" BOOLEAN NOT NULL DEFAULT true,
     "paidAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "paymentId" TEXT,
+    "isException" BOOLEAN NOT NULL DEFAULT false,
+    "exceptionType" TEXT,
+    "originalQuantity" INTEGER,
+    "overrideQuantity" INTEGER,
+    "exceptionNotes" TEXT,
     "paymentStatus" "PaymentStatus" NOT NULL DEFAULT 'PENDING',
 
     CONSTRAINT "orders_pkey" PRIMARY KEY ("id")
@@ -275,6 +309,86 @@ CREATE TABLE "order_items" (
     "depositAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
 
     CONSTRAINT "order_items_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "CompanyTariff" (
+    "id" TEXT NOT NULL,
+    "companyId" TEXT NOT NULL,
+    "tariffId" TEXT NOT NULL,
+    "assignedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "assignedBy" TEXT,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "effectiveFrom" TIMESTAMP(3),
+
+    CONSTRAINT "CompanyTariff_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "TariffSlab" (
+    "id" TEXT NOT NULL,
+    "tariffId" TEXT NOT NULL,
+    "productType" "ProductType" NOT NULL,
+    "fromQty" INTEGER NOT NULL,
+    "toQty" INTEGER,
+    "pricePerUnit" DECIMAL(65,30),
+    "percentage" DECIMAL(65,30),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "TariffSlab_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Tariff" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "effectiveFrom" TIMESTAMP(3) NOT NULL,
+    "effectiveTo" TIMESTAMP(3),
+    "assignedBy" TEXT,
+    "createdBy" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "isDefault" BOOLEAN NOT NULL DEFAULT false,
+
+    CONSTRAINT "Tariff_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Invoice" (
+    "id" TEXT NOT NULL,
+    "companyId" TEXT NOT NULL,
+    "periodStart" TIMESTAMP(3) NOT NULL,
+    "periodEnd" TIMESTAMP(3) NOT NULL,
+    "totalAmount" DECIMAL(65,30) NOT NULL,
+    "paidAmount" DECIMAL(65,30) NOT NULL DEFAULT 0,
+    "billingStatus" "BillingStatus" NOT NULL DEFAULT 'UNPAID',
+    "status" "InvoiceStatus",
+    "dueDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "generatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "paidAt" TIMESTAMP(3),
+
+    CONSTRAINT "Invoice_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "InvoiceLineItem" (
+    "id" TEXT NOT NULL,
+    "invoiceId" TEXT NOT NULL,
+    "productType" "ProductType" NOT NULL,
+    "fromQty" INTEGER NOT NULL,
+    "toQty" INTEGER,
+    "unitPrice" DECIMAL(65,30),
+    "percentage" DECIMAL(65,30),
+    "baseAmount" DECIMAL(65,30),
+    "quantity" INTEGER NOT NULL,
+    "amount" DECIMAL(65,30) NOT NULL,
+    "tariffId" TEXT,
+    "slabId" TEXT,
+    "effectiveDate" TIMESTAMP(3),
+
+    CONSTRAINT "InvoiceLineItem_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -296,25 +410,37 @@ CREATE INDEX "products_tenantId_size_idx" ON "products"("tenantId", "size");
 CREATE INDEX "products_tenantId_isReusable_idx" ON "products"("tenantId", "isReusable");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "payments_paymentNumber_key" ON "payments"("paymentNumber");
+CREATE UNIQUE INDEX "customer_payments_paymentNumber_key" ON "customer_payments"("paymentNumber");
 
 -- CreateIndex
-CREATE INDEX "payments_tenantId_idx" ON "payments"("tenantId");
+CREATE INDEX "customer_payments_tenantId_idx" ON "customer_payments"("tenantId");
 
 -- CreateIndex
-CREATE INDEX "payments_customerId_idx" ON "payments"("customerId");
+CREATE INDEX "customer_payments_customerId_idx" ON "customer_payments"("customerId");
 
 -- CreateIndex
-CREATE INDEX "payments_subscriptionId_idx" ON "payments"("subscriptionId");
+CREATE INDEX "customer_payments_subscriptionId_idx" ON "customer_payments"("subscriptionId");
 
 -- CreateIndex
-CREATE INDEX "payments_orderId_idx" ON "payments"("orderId");
+CREATE INDEX "customer_payments_orderId_idx" ON "customer_payments"("orderId");
 
 -- CreateIndex
-CREATE INDEX "payments_status_idx" ON "payments"("status");
+CREATE INDEX "customer_payments_status_idx" ON "customer_payments"("status");
 
 -- CreateIndex
-CREATE INDEX "payments_dueDate_idx" ON "payments"("dueDate");
+CREATE INDEX "customer_payments_dueDate_idx" ON "customer_payments"("dueDate");
+
+-- CreateIndex
+CREATE INDEX "customer_payments_paymentDate_idx" ON "customer_payments"("paymentDate");
+
+-- CreateIndex
+CREATE INDEX "invoice_payments_invoiceId_idx" ON "invoice_payments"("invoiceId");
+
+-- CreateIndex
+CREATE INDEX "invoice_payments_tenantId_idx" ON "invoice_payments"("tenantId");
+
+-- CreateIndex
+CREATE INDEX "invoice_payments_paidAt_idx" ON "invoice_payments"("paidAt");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "product_inventories_productId_key" ON "product_inventories"("productId");
@@ -398,9 +524,6 @@ CREATE UNIQUE INDEX "subscriptions_customerId_productId_recurrence_deliveryDayOf
 CREATE UNIQUE INDEX "orders_orderNumber_key" ON "orders"("orderNumber");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "orders_orderNumberDisplay_key" ON "orders"("orderNumberDisplay");
-
--- CreateIndex
 CREATE INDEX "orders_subscriptionId_idx" ON "orders"("subscriptionId");
 
 -- CreateIndex
@@ -431,10 +554,31 @@ CREATE INDEX "orders_driverId_idx" ON "orders"("driverId");
 CREATE INDEX "orders_orderNumberDisplay_idx" ON "orders"("orderNumberDisplay");
 
 -- CreateIndex
+CREATE INDEX "orders_tenantId_deliveryDate_status_idx" ON "orders"("tenantId", "deliveryDate", "status");
+
+-- CreateIndex
 CREATE INDEX "order_items_orderId_idx" ON "order_items"("orderId");
 
 -- CreateIndex
 CREATE INDEX "order_items_productId_idx" ON "order_items"("productId");
+
+-- CreateIndex
+CREATE INDEX "CompanyTariff_companyId_effectiveFrom_idx" ON "CompanyTariff"("companyId", "effectiveFrom");
+
+-- CreateIndex
+CREATE INDEX "CompanyTariff_companyId_idx" ON "CompanyTariff"("companyId");
+
+-- CreateIndex
+CREATE INDEX "CompanyTariff_companyId_isActive_idx" ON "CompanyTariff"("companyId", "isActive");
+
+-- CreateIndex
+CREATE INDEX "TariffSlab_tariffId_productType_idx" ON "TariffSlab"("tariffId", "productType");
+
+-- CreateIndex
+CREATE INDEX "Tariff_isActive_idx" ON "Tariff"("isActive");
+
+-- CreateIndex
+CREATE INDEX "Invoice_companyId_periodStart_periodEnd_idx" ON "Invoice"("companyId", "periodStart", "periodEnd");
 
 -- AddForeignKey
 ALTER TABLE "users" ADD CONSTRAINT "users_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -449,19 +593,25 @@ ALTER TABLE "products" ADD CONSTRAINT "products_tenantId_fkey" FOREIGN KEY ("ten
 ALTER TABLE "products" ADD CONSTRAINT "products_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "payments" ADD CONSTRAINT "payments_collectedByDriverId_fkey" FOREIGN KEY ("collectedByDriverId") REFERENCES "drivers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "customer_payments" ADD CONSTRAINT "customer_payments_collectedByDriverId_fkey" FOREIGN KEY ("collectedByDriverId") REFERENCES "drivers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "payments" ADD CONSTRAINT "payments_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "customer_payments" ADD CONSTRAINT "customer_payments_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "payments" ADD CONSTRAINT "payments_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "customer_payments" ADD CONSTRAINT "customer_payments_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "payments" ADD CONSTRAINT "payments_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "subscriptions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "customer_payments" ADD CONSTRAINT "customer_payments_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "subscriptions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "payments" ADD CONSTRAINT "payments_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "customer_payments" ADD CONSTRAINT "customer_payments_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "invoice_payments" ADD CONSTRAINT "invoice_payments_invoiceId_fkey" FOREIGN KEY ("invoiceId") REFERENCES "Invoice"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "invoice_payments" ADD CONSTRAINT "invoice_payments_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "payment_items" ADD CONSTRAINT "payment_items_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "orders"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -470,7 +620,7 @@ ALTER TABLE "payment_items" ADD CONSTRAINT "payment_items_orderId_fkey" FOREIGN 
 ALTER TABLE "payment_items" ADD CONSTRAINT "payment_items_orderItemId_fkey" FOREIGN KEY ("orderItemId") REFERENCES "order_items"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "payment_items" ADD CONSTRAINT "payment_items_paymentId_fkey" FOREIGN KEY ("paymentId") REFERENCES "payments"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "payment_items" ADD CONSTRAINT "payment_items_paymentId_fkey" FOREIGN KEY ("paymentId") REFERENCES "customer_payments"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "product_inventories" ADD CONSTRAINT "product_inventories_productId_fkey" FOREIGN KEY ("productId") REFERENCES "products"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -537,3 +687,18 @@ ALTER TABLE "order_items" ADD CONSTRAINT "order_items_orderId_fkey" FOREIGN KEY 
 
 -- AddForeignKey
 ALTER TABLE "order_items" ADD CONSTRAINT "order_items_productId_fkey" FOREIGN KEY ("productId") REFERENCES "products"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CompanyTariff" ADD CONSTRAINT "CompanyTariff_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CompanyTariff" ADD CONSTRAINT "CompanyTariff_tariffId_fkey" FOREIGN KEY ("tariffId") REFERENCES "Tariff"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TariffSlab" ADD CONSTRAINT "TariffSlab_tariffId_fkey" FOREIGN KEY ("tariffId") REFERENCES "Tariff"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Invoice" ADD CONSTRAINT "Invoice_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InvoiceLineItem" ADD CONSTRAINT "InvoiceLineItem_invoiceId_fkey" FOREIGN KEY ("invoiceId") REFERENCES "Invoice"("id") ON DELETE CASCADE ON UPDATE CASCADE;

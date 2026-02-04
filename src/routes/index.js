@@ -11,51 +11,61 @@ router.use(
   "/admin",
   protect,
   tenantMiddleware,
-  require("./admindashboardRoutes")
+  require("./admindashboardRoutes"),
 );
 router.use(
   "/app/driver/payment",
   protect,
   tenantMiddleware,
-  require("./paymentRoutes")
+  require("./paymentRoutes"),
 );
 router.use(
   "/customer/recurring",
   protect,
   tenantMiddleware,
-  require("./customerappRoutes/customerReccuringRoutes")
+  require("./customerappRoutes/customerReccuringRoutes"),
 );
+
+// FCM TOKEN ROUTE
+
+router.use(
+  "/fcm",
+  protect,
+  tenantMiddleware,
+  require("./fcmTokenRoutes/fcmRoutes"),
+);
+
 router.use(
   "/customer/orders",
   protect,
   tenantMiddleware,
-  require("./customerappRoutes/customerorderRoutes")
+  require("./customerappRoutes/customerorderRoutes"),
 );
 router.use(
   "/admin/customers",
   protect,
   tenantMiddleware,
-  require("./customerAdminRoutes")
+  require("./customerAdminRoutes"),
 );
 
 router.use(
   "/admin/customer-admin",
   protect,
   tenantMiddleware,
-  require("./billingsRoutes")
+  require("./billingsRoutes"),
 );
 
 router.use(
   "/admin/drivers",
   protect,
   tenantMiddleware,
-  require("./adminDriverRoutes")
+  require("./adminDriverRoutes"),
 );
 router.use(
   "/driver/app",
   protect,
   tenantMiddleware,
-  require("./driverappRoutes/driverOrderRoutes")
+  require("./driverappRoutes/driverOrderRoutes"),
 );
 
 router.use("/products", protect, tenantMiddleware, require("./productRoutes"));
@@ -63,35 +73,40 @@ router.use(
   "/delivery-operations",
   protect,
   tenantMiddleware,
-  require("./deliveryOperationsRoute")
+  require("./deliveryOperationsRoute"),
 );
 router.use(
   "/inventory",
   protect,
   tenantMiddleware,
-  require("./inventoryRoute")
+  require("./inventoryRoute"),
 );
 router.use("/orders", protect, tenantMiddleware, require("./orderRoutes"));
 router.use("/zones", protect, tenantMiddleware, require("./zoneRoutes"));
 
-router.use("/tariff", protect, tenantMiddleware, require("./tariffManagementRoutes"));
+router.use(
+  "/tariff",
+  protect,
+  tenantMiddleware,
+  require("./tariffManagementRoutes"),
+);
 
-router.use("/company-tariff", protect, tenantMiddleware, require("./companyTariffRoute"));
-
+router.use(
+  "/company-tariff",
+  protect,
+  tenantMiddleware,
+  require("./companyTariffRoute"),
+);
 
 router.use("/invoices", protect, tenantMiddleware, require("./invoiceRoutes"));
 
-router.use("/company-payment", protect, tenantMiddleware, require("./createPaymentCompRoute"));
-
 router.use(
-  "/reports",
+  "/company-payment",
   protect,
   tenantMiddleware,
-  require("./reportRoutes")
+  require("./createPaymentCompRoute"),
 );
 
-
-
-
+router.use("/reports", protect, tenantMiddleware, require("./reportRoutes"));
 
 module.exports = router;

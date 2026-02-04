@@ -17,6 +17,8 @@ exports.getUsers = async (req, res) => {
         phone: true,
         role: true,
         logo: true,
+        isActive: true,
+        // status: true,
         createdAt: true,
         tenant:
           req.user.role === "super_admin" ? { select: { name: true } } : false,
@@ -93,11 +95,102 @@ exports.updateCompany = async (req, res) => {
 
     const updated = await prisma.tenant.update({
       where: { id: req.derivedTenantId },
-      data: { name, email, phone, address, logo },
+      data: { name, email, phone, address, logo, isActive: true },
     });
 
     res.json({ message: "Company updated", company: updated });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+
+
+// exports.updateUserStatus = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const { isActive } = req.body;
+//     const tenantId = req.derivedTenantId;
+
+//     if (!tenantId) {
+//       return res.status(403).json({ message: "No company access" });
+//     }
+
+//     const user = await prisma.user.findFirst({
+//       where: { id, tenantId },
+//     });
+
+//     if (!user) {
+//       return res.status(404).json({ message: "User not found" });
+//     }
+
+//     const updatedUser = await prisma.user.update({
+//       where: { id },
+//       data: { isActive },
+//     });
+
+//     res.json({
+//       message: "User status updated",
+//       user: updatedUser,
+//     });
+//   } catch (err) {
+//     console.error("Update User Status Error:", err);
+//     res.status(500).json({ error: err.message });
+//   }
+// };
+
+
+exports.updateUserStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // frontend sends { status: "active" | "inactive" }
+
+    // Convert status string to boolean
+    const isActive = status === "active";
+
+    const requesterTenantId = req.derivedTenantId;
+    const requesterRole = req.user?.role;
+
+    let user;
+
+    if (requesterRole === "super_admin") {
+      user = await prisma.user.findUnique({ where: { id } });
+    } else {
+      if (!requesterTenantId) {
+        return res.status(403).json({ message: "No company access" });
+      }
+      user = await prisma.user.findFirst({ where: { id, tenantId: requesterTenantId } });
+    }
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id },
+      data: { isActive },
+    });
+//     if (user.tenantId) {
+//   await prisma.tenant.update({
+//     where: { id: user.tenantId },
+//     data: { status: isActive ? "active" : "inactive" },
+//   });
+// }
+// ✅ ONLY update tenant if THIS USER is company_admin
+    if (user.role === "company_admin" && user.tenantId) {
+      await prisma.tenant.update({
+        where: { id: user.tenantId },
+        data: { status: isActive ? "active" : "inactive" },
+      });
+    }
+
+    res.json({
+      message: "User status updated",
+      user: updatedUser,
+    });
+  } catch (err) {
+    console.error("Update User Status Error:", err);
     res.status(500).json({ error: err.message });
   }
 };
