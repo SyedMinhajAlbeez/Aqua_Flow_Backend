@@ -1,6 +1,6 @@
 // src/controllers/customerOrderController.js
 const prisma = require("../../prisma/client");
-
+const notificationService = require("../../utils/notificationService");
 
 // CREATE ORDER - CUSTOMER APP (EXACTLY SAME LOGIC AS ADMIN)
 // exports.createCustomerOrder = async (req, res) => {
@@ -544,15 +544,45 @@ exports.createCustomerOrder = async (req, res) => {
     let hasReusableProduct = false;
     let hasNonReusableProduct = false;
     let nonReusableProductNames = [];
+    const outOfStockItems = []; // Track out-of-stock products for notifications
 
     for (const item of items) {
       const product = await prisma.product.findUnique({
         where: { id: item.productId, tenantId },
       });
       if (!product || product.status !== "active") {
-        return res
-          .status(400)
-          .json({ error: `Product not available: ${item.productId}` });
+        // ✅ GRACEFUL: Send notifications instead of hard error
+        const customer = await prisma.customer.findUnique({
+          where: { id: customerId, tenantId },
+          select: { name: true },
+        });
+
+        outOfStockItems.push({
+          productId: item.productId,
+          productName: product?.name || "Unknown Product",
+          customerName: customer?.name || "Customer",
+          quantity: item.quantity,
+        });
+
+        // Send notification to customer
+        if (customer) {
+          await notificationService.notifyCustomerOutOfStock(customerId, {
+            productName: product?.name || "Unknown Product",
+            productId: item.productId,
+            customerName: customer.name,
+          }).catch(err => console.log("Customer notification failed:", err.message));
+        }
+
+        // Send alert to admin
+        await notificationService.notifyAdminOutOfStock(tenantId, {
+          productName: product?.name || "Unknown Product",
+          productId: item.productId,
+          customerName: customer?.name || "Customer",
+          currentStock: 0,
+          requestedQuantity: item.quantity || 1,
+        }).catch(err => console.log("Admin notification failed:", err.message));
+
+        continue; // Skip this product and continue processing others
       }
 
       products.push({
@@ -566,6 +596,26 @@ exports.createCustomerOrder = async (req, res) => {
         hasNonReusableProduct = true;
         nonReusableProductNames.push(product.name);
       }
+    }
+
+    // ✅ If ALL items are out of stock, return with notification confirmation
+    if (outOfStockItems.length > 0 && products.length === 0) {
+      return res.status(202).json({
+        success: true,
+        accepted: true,
+        message: "Your order request has been received. The requested products are currently out of stock, but we've notified the admin to prioritize restocking. You'll be contacted soon!",
+        outOfStockItems,
+        notification: {
+          customerNotified: true,
+          adminAlerted: true,
+          status: "pending_admin_action",
+        },
+      });
+    }
+
+    // ✅ If PARTIAL items are out of stock, warn but continue if other items available
+    if (outOfStockItems.length > 0 && products.length > 0) {
+      console.log("⚠️ Partial out-of-stock detected. Continuing with available items:", products.map(p => p.name));
     }
 
     // ✅ EFFECTIVE WITHBOTTLES LOGIC (EXACTLY LIKE ADMIN)
@@ -655,8 +705,47 @@ exports.createCustomerOrder = async (req, res) => {
 
         if (product.isReusable) {
           if (bottleInventory && bottleInventory.inStock < quantity) {
-            return res.status(400).json({
-              error: `Not enough bottles in stock for ${product.name}. Available: ${bottleInventory.inStock}, Required: ${quantity}`,
+            // ✅ GRACEFUL: Send notification instead of hard error
+            const customer = await prisma.customer.findUnique({
+              where: { id: customerId, tenantId },
+              select: { name: true },
+            });
+
+            console.log(`⚠️ Low bottle stock for ${product.name}: ${bottleInventory.inStock} < ${quantity}`);
+
+            // Send notification to customer
+            if (customer) {
+              await notificationService.notifyCustomerOutOfStock(customerId, {
+                productName: `${product.name} (Bottles)`,
+                productId: product.id,
+                customerName: customer.name,
+              }).catch(err => console.log("Customer notification failed:", err.message));
+            }
+
+            // Alert admin about low bottle stock
+            await notificationService.notifyAdminLowStock(tenantId, {
+              productName: `${product.name} (Bottles)`,
+              productId: product.id,
+              currentStock: bottleInventory.inStock,
+              minimumThreshold: quantity,
+              customerName: customer?.name || "Customer",
+            }).catch(err => console.log("Admin notification failed:", err.message));
+
+            // Return graceful response
+            return res.status(202).json({
+              success: true,
+              accepted: true,
+              message: `Bottles for ${product.name} are in high demand. We've alerted the admin to process your order with priority. You'll be contacted soon!`,
+              details: {
+                product: product.name,
+                bottlesAvailable: bottleInventory.inStock,
+                bottlesRequested: quantity,
+                status: "pending_bottle_availability",
+              },
+              notification: {
+                customerNotified: true,
+                adminAlerted: true,
+              },
             });
           }
         }
@@ -670,6 +759,7 @@ exports.createCustomerOrder = async (req, res) => {
     let totalReusableDelivered = 0;
     let circulatingReusableDelivered = 0;
     let expectedEmpties = 0;
+    const lowStockItems = []; // Track low stock for notifications
 
     for (const productData of products) {
       const product = productData;
@@ -680,11 +770,120 @@ exports.createCustomerOrder = async (req, res) => {
         where: { productId_tenantId: { productId: product.id, tenantId } },
       });
 
-      if (!inventory || inventory.currentStock < quantity) {
-        return res.status(400).json({
-          error: `${product.name} out of stock! Available: ${inventory?.currentStock || 0
-            }`,
+      const currentStock = inventory?.currentStock || 0;
+      // If inventory missing or zero -> out of stock
+      if (!inventory || currentStock === 0) {
+        // ✅ GRACEFUL: Send notification instead of hard error
+        const customer = await prisma.customer.findUnique({
+          where: { id: customerId, tenantId },
+          select: { name: true },
         });
+
+        console.log(`⚠️ Out of stock for ${product.name}: ${currentStock} < ${quantity}`);
+
+        // Send notification to customer
+        if (customer) {
+          await notificationService.notifyCustomerOutOfStock(customerId, {
+            productName: product.name,
+            productId: product.id,
+            customerName: customer.name,
+          }).catch(err => console.log("Customer notification failed:", err.message));
+        }
+
+        // Alert admin
+        await notificationService.notifyAdminOutOfStock(tenantId, {
+          productName: product.name,
+          productId: product.id,
+          customerName: customer?.name || "Customer",
+          currentStock: currentStock,
+          requestedQuantity: quantity,
+        }).catch(err => console.log("Admin notification failed:", err.message));
+
+        // Return graceful response
+        return res.status(202).json({
+          success: true,
+          accepted: true,
+          message: `${product.name} is currently out of stock, but we've notified the admin about your order. They will contact you soon with updates!`,
+          details: {
+            product: product.name,
+            stockAvailable: currentStock,
+            stockRequested: quantity,
+            status: "pending_stock_availability",
+          },
+          notification: {
+            customerNotified: true,
+            adminAlerted: true,
+          },
+        });
+      }
+
+      // If some stock exists but less than requested -> partial availability
+      if (currentStock > 0 && currentStock < quantity) {
+        const customer = await prisma.customer.findUnique({
+          where: { id: customerId, tenantId },
+          select: { name: true },
+        });
+
+        console.log(`⚠️ Partial stock for ${product.name}: ${currentStock} < ${quantity}`);
+
+        // Notify customer about partial availability
+        if (customer) {
+          await notificationService.notifyCustomerPartialStock(customerId, {
+            productName: product.name,
+            productId: product.id,
+            availableQuantity: currentStock,
+            requestedQuantity: quantity,
+            customerName: customer.name,
+          }).catch(err => console.log("Customer partial notification failed:", err.message));
+        }
+
+        // Notify admin about low stock so they can prioritize
+        await notificationService.notifyAdminLowStock(tenantId, {
+          productName: product.name,
+          productId: product.id,
+          currentStock: currentStock,
+          minimumThreshold: quantity,
+          customerName: customer?.name || "Customer",
+        }).catch(err => console.log("Admin low stock notification failed:", err.message));
+
+        // Return graceful partial response
+        return res.status(202).json({
+          success: true,
+          accepted: true,
+          message: `${product.name} has only ${currentStock} available of ${quantity} requested. We've notified the admin to prioritize restocking and will contact you with options.`,
+          details: {
+            product: product.name,
+            stockAvailable: currentStock,
+            stockRequested: quantity,
+            status: "partial_stock_available",
+          },
+          notification: {
+            customerNotified: true,
+            adminNotified: true,
+          },
+        });
+      }
+
+      // ✅ Check for low stock (less than 5 units) and notify admin
+      if (inventory.currentStock > 0 && inventory.currentStock <= 5) {
+        lowStockItems.push({
+          productId: product.id,
+          productName: product.name,
+          currentStock: inventory.currentStock,
+          requestedQuantity: quantity,
+        });
+
+        // Notify admin about low stock
+        await notificationService.notifyAdminLowStock(tenantId, {
+          productName: product.name,
+          productId: product.id,
+          currentStock: inventory.currentStock,
+          minimumThreshold: 5,
+          customerName: (await prisma.customer.findUnique({
+            where: { id: customerId, tenantId },
+            select: { name: true },
+          }))?.name || "Customer",
+        }).catch(err => console.log("Admin low stock notification failed:", err.message));
       }
 
       const itemTotal = quantity * product.price;
@@ -795,12 +994,12 @@ exports.createCustomerOrder = async (req, res) => {
         });
 
         // 3. Update Customer Security Deposit
-        if (acceptableDepositAmount > 0) {
-          await tx.customer.update({
-            where: { id: customerId },
-            data: { securityDeposit: { increment: acceptableDepositAmount } },
-          });
-        }
+        // if (acceptableDepositAmount > 0) {
+        //   await tx.customer.update({
+        //     where: { id: customerId },
+        //     data: { securityDeposit: { increment: acceptableDepositAmount } },
+        //   });
+        // }
 
         // 4. Decrement Product Stock
         for (const item of items) {
@@ -834,21 +1033,39 @@ exports.createCustomerOrder = async (req, res) => {
             },
           });
         }
+        // if (
+        //   hasReusableProduct &&
+        //   totalReusableDelivered > 0 &&
+        //   (effectiveWithBottles === true || effectiveWithBottles === "true")
+        // ) {
+        //   await tx.bottleInventory.upsert({
+        //     where: { tenantId },
+        //     update: {
+        //       inStock: { decrement: totalReusableDelivered },
+        //       withCustomers: { increment: totalReusableDelivered },
+        //     },
+        //     create: {
+        //       tenantId,
+        //       inStock: Math.max(0, -totalReusableDelivered),
+        //       withCustomers: totalReusableDelivered,
+        //     },
+        //   });
+        // }
 
         // 6. Customer empties tracking
-        if (
-          hasReusableProduct &&
-          circulatingReusableDelivered > 0 &&
-          (effectiveWithBottles === true || effectiveWithBottles === "true")
-        ) {
-          await tx.customer.update({
-            where: { id: customerId },
-            data: {
-              empties: { increment: expectedEmpties },
-              bottlesGiven: { increment: circulatingReusableDelivered },
-            },
-          });
-        }
+        // if (
+        //   hasReusableProduct &&
+        //   circulatingReusableDelivered > 0 &&
+        //   (effectiveWithBottles === true || effectiveWithBottles === "true")
+        // ) {
+        //   await tx.customer.update({
+        //     where: { id: customerId },
+        //     data: {
+        //       empties: { increment: expectedEmpties },
+        //       bottlesGiven: { increment: circulatingReusableDelivered },
+        //     },
+        //   });
+        // }
 
         // 7. CREATE SUBSCRIPTION IF RECURRING
         let subscription = null;
@@ -953,7 +1170,7 @@ exports.createCustomerOrder = async (req, res) => {
             ? "With bottles"
             : "Refill only"
           : ""
-        }.`,
+        }.${lowStockItems.length > 0 ? " Note: Some items have low stock. Admin has been notified." : ""}`,
       order: {
         ...result.order,
         isRecurring,
@@ -977,6 +1194,11 @@ exports.createCustomerOrder = async (req, res) => {
         initialStatus: "pending",
         isCustomerOrder: true,
         nextDelivery: isRecurring ? nextRecurringDate : null,
+        lowStockItems: lowStockItems.length > 0 ? {
+          itemsWithLowStock: lowStockItems,
+          adminNotified: true,
+          message: "These items are running low. Admin is aware and will prioritize delivery.",
+        } : null,
       },
     });
   } catch (err) {

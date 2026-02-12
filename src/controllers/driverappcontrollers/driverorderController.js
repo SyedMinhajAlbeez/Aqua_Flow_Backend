@@ -642,6 +642,8 @@ exports.completeOrderWithEmpties = async (req, res) => {
           });
         }
 
+
+
         // 3. Return stock to products
         if (goodReturned > 0 && reusableItems.length > 0) {
           const totalReusableQuantity = reusableItems.reduce(
@@ -666,6 +668,46 @@ exports.completeOrderWithEmpties = async (req, res) => {
             }
           }
         }
+
+        // // Calculate total deposit to add (only for first-time / withBottles orders)
+        // let depositToAdd = 0;
+
+        // if (order.withBottles === true) {
+        //   // First time – customer is taking new bottles → business receives deposit
+        //   depositToAdd = order.items.reduce((sum, item) => {
+        //     if (item.product.isReusable) {
+        //       return sum + (item.quantity * (item.depositAmount || 0));
+        //     }
+        //     return sum;
+        //   }, 0);
+        // }
+
+        // Also calculate bottles actually given (usually same as quantity, unless partial delivery – but you don't have partial yet)
+        const bottlesGivenThisOrder = order.items.reduce((sum, item) => {
+          if (item.product.isReusable) {
+            return sum + item.quantity;
+          }
+          return sum;
+        }, 0);
+
+        // // ────────────────────────────────────────────────
+        // // Inside the transaction, after validations:
+        // await tx.customer.update({
+        //   where: { id: order.customerId },
+        //   data: {
+        //     // Only increment securityDeposit for first-time bottle delivery
+        //     ...(depositToAdd > 0 && { securityDeposit: { increment: depositToAdd } }),
+
+        //     // bottlesGiven should increase when customer physically receives new bottles
+        //     // (both first-time and refill – but in refill it's usually exchange, so net zero bottles)
+        //     // Most systems still increment bottlesGiven on every delivery to track lifetime total
+        //     bottlesGiven: { increment: bottlesGivenThisOrder },
+
+        //     // empties already being decremented earlier in your code – that's fine for refill
+        //   },
+        // });
+
+
 
         // 4. Update order status to completed
         await tx.order.update({

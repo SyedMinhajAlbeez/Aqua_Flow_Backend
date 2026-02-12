@@ -184,6 +184,18 @@ exports.collectPayment = async (req, res) => {
     const driverId = req.user.id;
     const tenantId = req.derivedTenantId;
 
+    // const payment = await prisma.customerPayment.findFirst({
+    //   where: {
+    //     id: paymentId,
+    //     tenantId,
+    //     OR: [{ status: "PENDING" }, { status: "PARTIAL" }],
+    //   },
+    //   include: {
+    //     order: true,
+    //     subscription: true,
+    //     customer: true,
+    //   },
+    // });
     const payment = await prisma.customerPayment.findFirst({
       where: {
         id: paymentId,
@@ -191,12 +203,24 @@ exports.collectPayment = async (req, res) => {
         OR: [{ status: "PENDING" }, { status: "PARTIAL" }],
       },
       include: {
-        order: true,
+        order: {
+          include: {
+            items: {
+              include: {
+                product: {
+                  select: {
+                    isReusable: true,
+                    depositAmount: true,
+                  },
+                },
+              },
+            },
+          },
+        },
         subscription: true,
         customer: true,
       },
     });
-
     if (!payment) {
       return res
         .status(404)
@@ -255,6 +279,7 @@ exports.collectPayment = async (req, res) => {
       },
     });
 
+
     // Update customer's due amount (only the actual applied amount)
     await prisma.customer.update({
       where: { id: payment.customerId },
@@ -271,6 +296,33 @@ exports.collectPayment = async (req, res) => {
           paidAmount: newPaidAmount,
         },
       });
+    }
+
+    if (payment.orderId && newStatus === "PAID") {
+      const order = payment.order;
+
+      if (order.withBottles === true && !order.isRecurring) {
+        let depositToAdd = 0;
+
+        if (order.items && Array.isArray(order.items)) {
+          for (const item of order.items) {
+            if (item.product?.isReusable) {
+              depositToAdd += item.quantity * (item.depositAmount || 0);
+            }
+          }
+        }
+
+        if (depositToAdd > 0) {
+          await prisma.customer.update({
+            where: { id: payment.customerId },
+            data: {
+              securityDeposit: { increment: depositToAdd },
+            },
+          });
+
+          console.log(`[DEPOSIT] Added Rs${depositToAdd} for customer ${payment.customerId} on order ${order.id}`);
+        }
+      }
     }
 
     await prisma.driver.update({
@@ -386,6 +438,9 @@ exports.getTodaysPayments = async (req, res) => {
         dueDate: {
           lte: dueWithin, // ✅ Use local date object
         },
+        order: {               // ← key relation
+          driverId: driverId   // ← only this driver's orders
+        }
       },
       include: {
         customer: {

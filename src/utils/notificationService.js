@@ -206,6 +206,120 @@ exports.sendPushToCustomer = async (customerId, notification, data = {}) => {
   }
 };
 
+/**
+ * Send REAL FCM notification to Admin/Tenant Keeper
+ */
+exports.sendPushToAdmin = async (tenantId, notification, data = {}) => {
+  try {
+    // Get tenant keeper (admin) details
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: {
+        keeper: {
+          select: { id: true, name: true, fcmToken: true, status: true, email: true },
+        },
+      },
+    });
+
+    if (!tenant || !tenant.keeper) {
+      return { success: false, error: "Tenant or admin not found", mock: false };
+    }
+
+    const admin_user = tenant.keeper;
+
+    if (admin_user.status !== "active" && admin_user.status !== true) {
+      return { success: false, error: "Admin is not active", mock: false };
+    }
+
+    if (!admin_user.fcmToken) {
+      return {
+        success: false,
+        error: "Admin has no FCM token registered",
+        code: "NO_FCM_TOKEN",
+        mock: false,
+      };
+    }
+
+    // Check Firebase
+    if (!admin.apps.length) {
+      return {
+        success: true,
+        message: "Firebase not initialized",
+        mock: true,
+        admin: admin_user.name,
+        notification: notification.title,
+      };
+    }
+
+    // Prepare message
+    const message = {
+      token: admin_user.fcmToken,
+      notification: {
+        title: notification.title || "Admin Alert",
+        body: notification.body || "New notification",
+      },
+      data: {
+        type: notification.type || "admin_alert",
+        adminId: String(admin_user.id),
+        tenantId: String(tenantId),
+        timestamp: new Date().toISOString(),
+        ...Object.keys(data).reduce((acc, key) => {
+          acc[key] = String(data[key]);
+          return acc;
+        }, {}),
+      },
+      android: { priority: "high" },
+      apns: { payload: { aps: { sound: "default", badge: 1 } } },
+    };
+
+    // Send notification
+    const response = await admin.messaging().send(message);
+
+    console.log(`✅ Admin notification sent to ${admin_user.name}`);
+
+    return {
+      success: true,
+      messageId: response,
+      mock: false,
+      admin: {
+        id: admin_user.id,
+        name: admin_user.name,
+        email: admin_user.email,
+      },
+    };
+  } catch (error) {
+    console.error("❌ FCM Admin Error:", error.message);
+
+    // Handle invalid token
+    if (
+      error.code === "messaging/invalid-registration-token" ||
+      error.code === "messaging/registration-token-not-registered"
+    ) {
+      // Remove invalid token from admin
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { keeperId: true },
+      });
+
+      if (tenant) {
+        await prisma.user.update({
+          where: { id: tenant.keeperId },
+          data: { fcmToken: null },
+        });
+
+        console.log(`Removed invalid token for admin of tenant ${tenantId}`);
+      }
+    }
+
+    return {
+      success: false,
+      error: error.message,
+      code: error.code,
+      mock: false,
+    };
+  }
+};
+
 // ==================== SPECIFIC NOTIFICATION TYPES ====================
 
 /**
@@ -390,6 +504,124 @@ exports.notifyPaymentDue = async (driverId, paymentDetails) => {
       type: "PAYMENT_REMINDER",
     },
     { customerName, amount, address },
+  );
+};
+
+/**
+ * Notify customer about out-of-stock product
+ * Send graceful notification instead of hard error
+ */
+exports.notifyCustomerOutOfStock = async (
+  customerId,
+  outOfStockDetails,
+) => {
+  const { productName, productId, customerName } = outOfStockDetails;
+
+  const title = `📦 ${productName} is out of stock.`;
+  const body = `⚠️ Please contact support.`;
+
+
+  return await this.sendPushToCustomer(
+    customerId,
+    { title, body, type: "OUT_OF_STOCK_ALERT" },
+    {
+      productId: String(productId),
+      productName,
+      customerName,
+      timestamp: new Date().toISOString(),
+    },
+  );
+};
+
+/**
+ * Notify customer about partial availability (some stock but less than requested)
+ */
+exports.notifyCustomerPartialStock = async (customerId, partialDetails) => {
+  const { productName, productId, availableQuantity, requestedQuantity, customerName } = partialDetails;
+  const title = `⚠️ Limited Stock: ${productName}`;
+  const body = `Only ${availableQuantity} available. Contact admin for info.`;
+
+
+  return await this.sendPushToCustomer(
+    customerId,
+    { title, body, type: "PARTIAL_STOCK_ALERT" },
+    {
+      productId: String(productId),
+      productName,
+      availableQuantity: String(availableQuantity),
+      requestedQuantity: String(requestedQuantity),
+      customerName,
+      timestamp: new Date().toISOString(),
+    },
+  );
+};
+
+/**
+ * Notify ADMIN about customer's out-of-stock order attempt
+ * Alert admin immediately about demand
+ */
+exports.notifyAdminOutOfStock = async (
+  tenantId,
+  outOfStockDetails,
+) => {
+  const {
+    productName,
+    productId,
+    customerName,
+    currentStock = 0,
+    requestedQuantity = 0
+  } = outOfStockDetails;
+
+  const title = "⚠️ Out of Stock Alert";
+  const body = `Customer "${customerName}" tried to order "${productName}" (Qty: ${requestedQuantity}). Current Stock: ${currentStock}. Jaldi restock करें!`;
+
+  return await this.sendPushToAdmin(
+    tenantId,
+    { title, body, type: "INVENTORY_ALERT" },
+    {
+      productId: String(productId),
+      productName,
+      customerName,
+      currentStock: String(currentStock),
+      requestedQuantity: String(requestedQuantity),
+      demand: "HIGH",
+      timestamp: new Date().toISOString(),
+      action: "CHECK_INVENTORY",
+    },
+  );
+};
+
+/**
+ * Notify ADMIN about customer's low stock order
+ * Alert admin when stock is running low
+ */
+exports.notifyAdminLowStock = async (
+  tenantId,
+  lowStockDetails,
+) => {
+  const {
+    productName,
+    productId,
+    currentStock = 0,
+    minimumThreshold = 5,
+    customerName
+  } = lowStockDetails;
+
+  const title = "⚠️ Low Stock Warning";
+  const body = `"${productName}" has low stock (${currentStock} left). Minimum threshold: ${minimumThreshold}. Restock soon!`;
+
+  return await this.sendPushToAdmin(
+    tenantId,
+    { title, body, type: "LOW_STOCK_WARNING" },
+    {
+      productId: String(productId),
+      productName,
+      currentStock: String(currentStock),
+      minimumThreshold: String(minimumThreshold),
+      demandFrom: customerName || "Multiple customers",
+      timestamp: new Date().toISOString(),
+      action: "RESTOCK_PRODUCT",
+    },
   );
 };
 
